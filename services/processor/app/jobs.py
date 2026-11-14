@@ -61,14 +61,33 @@ class JobManager:
         statement_id = str(statement["id"])
         db = SupabaseRest(self.settings)
         logger.info("Processing statement %s", statement_id)
+        last_progress: tuple[str, int] | None = None
+
+        def report(stage: str, percent: int) -> None:
+            nonlocal last_progress
+            key = (stage, percent)
+            if key == last_progress:
+                return
+            last_progress = key
+            try:
+                db.update_progress(statement_id, stage, percent)
+            except SupabaseError:
+                # Progress is telemetry, not a reason to fail an extraction.
+                logger.debug(
+                    "Could not record progress for statement %s", statement_id
+                )
+
         try:
+            report("Preparing the document", 1)
             file_size = int(statement.get("file_size") or 0)
             if file_size > self.settings.max_file_bytes:
                 raise ExtractionError(
                     f"The PDF is larger than the {self.settings.max_file_mb} MB processing limit."
                 )
 
+            report("Downloading the original PDF", 2)
             data = db.download_statement(statement)
+            report("Checking the PDF", 4)
             result: ExtractionResult = extract_pdf(
                 data,
                 ocr_enabled=self.settings.ocr_enabled,
@@ -76,7 +95,9 @@ class JobManager:
                 ocr_language=self.settings.tesseract_lang,
                 tesseract_cmd=self.settings.tesseract_cmd,
                 max_pages=self.settings.max_pages,
+                progress=report,
             )
+            report("Saving extracted transactions", 96)
             payload = result.to_json()
             db.save_result(statement_id, payload)
             logger.info(

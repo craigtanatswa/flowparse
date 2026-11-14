@@ -57,6 +57,7 @@ import {
   type TransactionRecord,
 } from "@/lib/domain";
 import {
+  cn,
   formatDateTime,
   formatFileSize,
   formatMoney,
@@ -90,37 +91,109 @@ function DetailItem({
   );
 }
 
-function ProcessingPanel({ status }: { status: string }) {
+const PROCESSING_STEPS = [
+  { label: "Reading the PDF and detecting the page layout", doneAt: 62 },
+  { label: "Parsing dates, descriptions, and amounts", doneAt: 86 },
+  { label: "Checking opening and closing balances", doneAt: 93 },
+  { label: "Saving the editable transaction preview", doneAt: 100 },
+] as const;
+
+function ProcessingPanel({ statement }: { statement: StatementRecord }) {
+  const status = readStatus(statement.status);
+  const stage = statement.processing_stage;
+  const percent =
+    typeof statement.progress_percent === "number" &&
+    Number.isFinite(statement.progress_percent)
+      ? Math.max(0, Math.min(100, Math.round(statement.progress_percent)))
+      : null;
+  const activeStep = PROCESSING_STEPS.findIndex(
+    (step) => percent === null || percent < step.doneAt
+  );
+
   return (
     <Card>
-      <CardContent className="px-5 py-10 text-center">
-        <div className="mx-auto flex size-12 items-center justify-center rounded-2xl bg-accent text-primary">
-          <Loader2 className="size-5 animate-spin" />
-        </div>
-        <p className="mt-4 text-sm font-semibold text-foreground">
-          {status === "queued"
-            ? "Your statement is queued"
-            : "Extracting transactions"}
-        </p>
-        <p className="mx-auto mt-1.5 max-w-md text-[12px] leading-6 text-muted-foreground">
-          {status === "queued"
-            ? "The processing service will start shortly. This page refreshes automatically."
-            : "We are reading the text layer, falling back to OCR where needed, and checking every balance. Scanned documents can take a little longer."}
-        </p>
-        <div className="mx-auto mt-6 max-w-sm space-y-2.5 text-left">
-          {[
-            "Reading the PDF and detecting the table layout",
-            "Parsing dates, descriptions, and amounts",
-            "Checking opening and closing balances",
-            "Saving the editable transaction preview",
-          ].map((step, index) => (
-            <div key={step} className="flex items-center gap-2.5 text-[11px]">
-              <span className="flex size-5 items-center justify-center rounded-full border border-border bg-card text-[9px] font-semibold text-muted-foreground">
-                {index + 1}
-              </span>
-              <span className="text-muted-foreground">{step}</span>
+      <CardContent className="px-5 py-10">
+        <div className="mx-auto max-w-lg text-center">
+          <div className="mx-auto flex size-12 items-center justify-center rounded-2xl bg-accent text-primary">
+            <Loader2 className="size-5 animate-spin" />
+          </div>
+          <p className="mt-4 text-sm font-semibold text-foreground">
+            {status === "queued" && percent === null
+              ? "Your statement is queued"
+              : "Extracting transactions"}
+          </p>
+          <p
+            className="mx-auto mt-1.5 max-w-md text-[12px] leading-6 text-muted-foreground"
+            aria-live="polite"
+          >
+            {stage ??
+              (status === "queued"
+                ? "Waiting for the processing service to pick up this statement."
+                : "Preparing the extraction pipeline.")}
+          </p>
+
+          {percent !== null ? (
+            <div className="mx-auto mt-5 max-w-sm">
+              <div
+                className="h-1.5 w-full overflow-hidden rounded-full bg-muted"
+                role="progressbar"
+                aria-label="Extraction progress"
+                aria-valuenow={percent}
+                aria-valuemin={0}
+                aria-valuemax={100}
+              >
+                <div
+                  className="h-full rounded-full bg-primary transition-[width] duration-500"
+                  style={{ width: `${percent}%` }}
+                />
+              </div>
+              <p className="mt-1.5 text-right text-[10.5px] tabular-nums text-muted-foreground">
+                {percent}%
+              </p>
             </div>
-          ))}
+          ) : null}
+
+          <div className="mx-auto mt-6 max-w-sm space-y-2.5 text-left">
+            {PROCESSING_STEPS.map((step, index) => {
+              const done = percent !== null && percent >= step.doneAt;
+              const active = !done && index === activeStep;
+              return (
+                <div
+                  key={step.label}
+                  className="flex items-center gap-2.5 text-[11px]"
+                  aria-current={active ? "step" : undefined}
+                >
+                  <span
+                    className={cn(
+                      "flex size-5 shrink-0 items-center justify-center rounded-full border text-[9px] font-semibold",
+                      done
+                        ? "border-primary/30 bg-accent text-primary"
+                        : active
+                          ? "border-primary/40 bg-card text-primary"
+                          : "border-border bg-card text-muted-foreground"
+                    )}
+                  >
+                    {done ? (
+                      <CheckCircle2 className="size-3" />
+                    ) : active ? (
+                      <Loader2 className="size-3 animate-spin" />
+                    ) : (
+                      index + 1
+                    )}
+                  </span>
+                  <span
+                    className={
+                      done || active
+                        ? "text-foreground"
+                        : "text-muted-foreground"
+                    }
+                  >
+                    {step.label}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
         </div>
       </CardContent>
     </Card>
@@ -271,6 +344,8 @@ export function StatementDetail({
           status: "queued",
           error_message: null,
           processed_at: null,
+          processing_stage: null,
+          progress_percent: null,
         },
       }));
       toast.message("Extraction queued", {
@@ -505,9 +580,15 @@ export function StatementDetail({
           <Loader2 className="animate-spin" />
           <AlertDescription className="flex flex-wrap items-center justify-between gap-2">
             <span>
-              {status === "queued"
-                ? "The statement is queued for extraction. This page updates automatically."
-                : "Extraction is running. This page updates automatically when it finishes."}
+              {statement.processing_stage
+                ? `${statement.processing_stage}${
+                    typeof statement.progress_percent === "number"
+                      ? ` (${statement.progress_percent}%)`
+                      : ""
+                  }`
+                : status === "queued"
+                  ? "The statement is queued for extraction. This page updates automatically."
+                  : "Extraction is running. This page updates automatically when it finishes."}
               {pollIssue ? (
                 <span className="mt-1 block text-[11px] text-sky-900/70">
                   {pollIssue}
@@ -577,7 +658,7 @@ export function StatementDetail({
       <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_370px]">
         <div className="min-w-0 space-y-5">
           {processing ? (
-            <ProcessingPanel status={status} />
+            <ProcessingPanel statement={statement} />
           ) : (
             <TransactionEditor
               statement={statement}

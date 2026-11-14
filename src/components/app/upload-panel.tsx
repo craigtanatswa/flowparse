@@ -39,6 +39,8 @@ interface UploadItem {
   statementId?: string;
   error?: string;
   rowCount?: number;
+  stage?: string;
+  progress?: number | null;
 }
 
 interface CreateUploadResponse {
@@ -97,6 +99,7 @@ export function UploadPanel({ compact = false }: { compact?: boolean }) {
   const [items, setItems] = React.useState<UploadItem[]>([]);
   const [dragging, setDragging] = React.useState(false);
   const [starting, setStarting] = React.useState(false);
+  const [retrying, setRetrying] = React.useState<Set<string>>(() => new Set());
 
   React.useEffect(() => {
     itemsRef.current = items;
@@ -179,6 +182,16 @@ export function UploadPanel({ compact = false }: { compact?: boolean }) {
             ...item,
             status: nextStatus,
             rowCount: payload.transactions.length,
+            stage:
+              nextStatus === "queued" || nextStatus === "processing"
+                ? payload.statement.processing_stage ?? undefined
+                : undefined,
+            progress:
+              nextStatus === "queued" || nextStatus === "processing"
+                ? typeof payload.statement.progress_percent === "number"
+                  ? payload.statement.progress_percent
+                  : null
+                : undefined,
             error:
               nextStatus === "failed"
                 ? payload.statement.error_message ??
@@ -394,6 +407,50 @@ export function UploadPanel({ compact = false }: { compact?: boolean }) {
     }
   }
 
+  async function retryExtraction(item: UploadItem) {
+    if (!item.statementId || retrying.has(item.key)) return;
+
+    setRetrying((current) => new Set(current).add(item.key));
+    updateItem(item.key, {
+      status: "queued",
+      error: undefined,
+      stage: undefined,
+      progress: null,
+    });
+
+    try {
+      const response = await fetch(
+        `/api/statements/${item.statementId}/process`,
+        { method: "POST" }
+      );
+      const payload = await readJson<{ status?: string; error?: string }>(response);
+
+      if (!response.ok) {
+        const message =
+          payload?.error ||
+          "Extraction could not be retried. Open the statement for details.";
+        updateItem(item.key, { status: "failed", error: message });
+        toast.error("Retry could not start", { description: message });
+        return;
+      }
+
+      toast.message("Extraction queued", {
+        description: "This batch will update automatically when it finishes.",
+      });
+      router.refresh();
+    } catch {
+      const message = "Could not reach the processing service. Please try again.";
+      updateItem(item.key, { status: "failed", error: message });
+      toast.error("Retry could not start", { description: message });
+    } finally {
+      setRetrying((current) => {
+        const next = new Set(current);
+        next.delete(item.key);
+        return next;
+      });
+    }
+  }
+
   async function startUploads() {
     if (starting) return;
     const ready = itemsRef.current.filter((item) => item.status === "ready");
@@ -422,6 +479,16 @@ export function UploadPanel({ compact = false }: { compact?: boolean }) {
   const readyCount = items.filter((item) => item.status === "ready").length;
   const activeCount = items.filter((item) => ACTIVE_STATUSES.has(item.status)).length;
   const hasRetryable = items.some((item) => item.status === "failed" && !item.statementId);
+  const finishedCompleted = items.filter((item) => item.status === "completed").length;
+  const finishedReview = items.filter((item) => item.status === "partial").length;
+  const finishedFailed = items.filter((item) => item.status === "failed").length;
+  const batchSummary = [
+    finishedCompleted ? `${finishedCompleted} extracted` : null,
+    finishedReview ? `${finishedReview} needing review` : null,
+    finishedFailed ? `${finishedFailed} failed` : null,
+  ]
+    .filter(Boolean)
+    .join(" · ");
 
   return (
     <section id="upload" className="scroll-mt-24">
@@ -581,6 +648,16 @@ export function UploadPanel({ compact = false }: { compact?: boolean }) {
                               }
                             />
                           )}
+                          {item.stage &&
+                          (item.status === "queued" || item.status === "processing") ? (
+                            <span className="min-w-0 max-w-full truncate">
+                              {item.stage}
+                            </span>
+                          ) : null}
+                          {typeof item.progress === "number" &&
+                          (item.status === "queued" || item.status === "processing") ? (
+                            <span className="tabular-nums">{item.progress}%</span>
+                          ) : null}
                           {item.rowCount !== undefined &&
                           (item.status === "completed" || item.status === "partial") ? (
                             <span>{pluralize(item.rowCount, "row")}</span>
@@ -598,9 +675,45 @@ export function UploadPanel({ compact = false }: { compact?: boolean }) {
                             aria-label={`Uploading ${item.file.name}`}
                           />
                         ) : null}
+                        {item.status === "processing" &&
+                        typeof item.progress === "number" ? (
+                          <div
+                            className="mt-2 h-1 overflow-hidden rounded-full bg-muted"
+                            role="progressbar"
+                            aria-label={`Extraction progress for ${item.file.name}`}
+                            aria-valuenow={item.progress}
+                            aria-valuemin={0}
+                            aria-valuemax={100}
+                          >
+                            <div
+                              className="h-full rounded-full bg-primary transition-[width] duration-500"
+                              style={{
+                                width: `${Math.max(0, Math.min(100, item.progress))}%`,
+                              }}
+                            />
+                          </div>
+                        ) : null}
                       </div>
 
                       <div className="flex shrink-0 items-center gap-1">
+                        {item.status === "failed" && item.statementId ? (
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="icon-sm"
+                            onClick={() => void retryExtraction(item)}
+                            disabled={retrying.has(item.key)}
+                            className="text-muted-foreground hover:text-primary"
+                            aria-label={`Retry extraction for ${item.file.name}`}
+                            title="Retry extraction"
+                          >
+                            {retrying.has(item.key) ? (
+                              <Loader2 className="animate-spin" />
+                            ) : (
+                              <RotateCcw />
+                            )}
+                          </Button>
+                        ) : null}
                         {item.statementId ? (
                           <Button asChild variant="ghost" size="icon-sm">
                             <Link
@@ -637,7 +750,7 @@ export function UploadPanel({ compact = false }: { compact?: boolean }) {
                     ? `${activeCount} file(s) still processing. You can leave this page.`
                     : readyCount
                       ? `${readyCount} file(s) ready to upload.`
-                      : "This batch has finished."}
+                      : batchSummary || "This batch has finished."}
                 </p>
                 <div className="flex gap-2">
                   {hasRetryable ? (

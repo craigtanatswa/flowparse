@@ -31,6 +31,7 @@ from .models import (
 )
 from .normalisation import normalise_description, resolve_row_currency
 from .pdf_text import PdfText, build_lines
+from .progress import ProgressCallback, notify_progress
 from .validation import (
     OCR_CONFIDENCE_THRESHOLD,
     assess_extraction_confidence,
@@ -1019,14 +1020,23 @@ class StatementParser:
 
     # ------------------------------------------------------------------ output
 
-    def parse(self) -> ExtractionResult:
+    def parse(self, progress: ProgressCallback | None = None) -> ExtractionResult:
+        notify_progress(progress, "Scanning statement balances", 64)
         self._scan_balances()
         if self.previous_balance is None and self.opening_balance is not None:
             # A stated opening balance is the only evidence available for
             # deciding direction on the first row of a single-amount layout.
             self.previous_balance = self.opening_balance
-        for page in self.pdf.pages:
+        page_count = len(self.pdf.pages)
+        for index, page in enumerate(self.pdf.pages):
+            notify_progress(
+                progress,
+                f"Parsing transactions from page {index + 1} of {page_count}",
+                66 + round(18 * index / max(page_count, 1)),
+            )
             self._process_page(page)
+
+        notify_progress(progress, "Checking balances and duplicates", 86)
 
         if self.opening_balance is None and self.first_balance_row is not None:
             first = self.first_balance_row
@@ -1089,6 +1099,8 @@ class StatementParser:
             closing_balance=self.closing_balance,
             transactions=self.transactions,
         )
+
+        notify_progress(progress, "Preparing the transaction preview", 93)
 
         if not self.transactions:
             return ExtractionResult(

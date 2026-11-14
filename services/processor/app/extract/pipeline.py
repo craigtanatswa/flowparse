@@ -3,6 +3,7 @@ from __future__ import annotations
 from .models import ExtractionResult
 from .parser import StatementParser
 from .pdf_text import read_pdf
+from .progress import ProgressCallback, notify_progress
 
 
 def extract_pdf(
@@ -13,6 +14,7 @@ def extract_pdf(
     ocr_language: str = "eng",
     tesseract_cmd: str | None = None,
     max_pages: int = 100,
+    progress: ProgressCallback | None = None,
 ) -> ExtractionResult:
     """Extract a bank statement from raw PDF bytes.
 
@@ -20,6 +22,7 @@ def extract_pdf(
     were actually found in the document; ambiguous rows are retained with review
     flags, and unresolved lines are returned in the extraction report.
     """
+    notify_progress(progress, "Opening the PDF", 5)
     pdf = read_pdf(
         data,
         ocr_enabled=ocr_enabled,
@@ -27,6 +30,12 @@ def extract_pdf(
         ocr_language=ocr_language,
         tesseract_cmd=tesseract_cmd,
         max_pages=max_pages,
+        progress=progress,
+    )
+    notify_progress(
+        progress,
+        f"PDF read - {pdf.page_count} page(s) detected",
+        62,
     )
     parser = StatementParser(pdf)
-    return parser.parse()
+    return parser.parse(progress=progress)

@@ -16,6 +16,7 @@ import { EmptyState } from "@/components/empty-state";
 import { logServerError } from "@/lib/log";
 import { PageHeader } from "@/components/page-header";
 import { UploadPanel } from "@/components/app/upload-panel";
+import { ActiveRefresh } from "@/components/statements/active-refresh";
 import { StatementStatusBadge } from "@/components/statement-status-badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -102,6 +103,15 @@ function RecentStatement({ statement }: { statement: StatementRecord }) {
           {formatPeriod(statement.statement_start, statement.statement_end)} ·{" "}
           {formatDateTime(statement.created_at)}
         </p>
+        {(status === "queued" || status === "processing") &&
+        statement.processing_stage ? (
+          <p className="mt-0.5 truncate text-[10.5px] text-primary">
+            {statement.processing_stage}
+            {typeof statement.progress_percent === "number"
+              ? ` · ${statement.progress_percent}%`
+              : ""}
+          </p>
+        ) : null}
       </div>
       <ArrowUpRight className="size-4 shrink-0 text-muted-foreground/50 transition-all group-hover:-translate-y-0.5 group-hover:translate-x-0.5 group-hover:text-primary" />
     </Link>
@@ -169,9 +179,14 @@ export default async function DashboardPage() {
     Math.round((monthStatements / FREE_PLAN.statementLimit) * 100)
   );
   const accountName = user.email?.split("@")[0]?.replace(/[._-]+/g, " ") || "there";
+  const hasActive = recent.some(
+    (statement) =>
+      statement.status === "queued" || statement.status === "processing"
+  );
 
   return (
     <>
+      <ActiveRefresh active={hasActive} />
       <PageHeader
         eyebrow="Overview"
         title={`Welcome back, ${accountName}`}

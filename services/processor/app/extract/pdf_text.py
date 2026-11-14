@@ -7,6 +7,7 @@ import fitz
 
 from .models import ExtractionError, Line, PageData, Word
 from .ocr import ocr_page
+from .progress import ProgressCallback, notify_progress
 
 
 @dataclass
@@ -77,6 +78,7 @@ def read_pdf(
     ocr_language: str,
     tesseract_cmd: str | None,
     max_pages: int,
+    progress: ProgressCallback | None = None,
 ) -> PdfText:
     if not data.lstrip().startswith(b"%PDF-"):
         raise ExtractionError("The uploaded file is not a valid PDF document.")
@@ -95,6 +97,8 @@ def read_pdf(
     if page_count > max_pages:
         raise ExtractionError(f"This PDF has {page_count} pages. The current limit is {max_pages} pages.")
 
+    notify_progress(progress, "Reading the document", 12)
+
     pages: list[PageData] = []
     used_ocr = False
     used_digital = False
@@ -102,6 +106,7 @@ def read_pdf(
     for index in range(page_count):
         page = document.load_page(index)
         page_number = index + 1
+        page_percent = 12 + round(48 * page_number / page_count)
         digital_text = page.get_text("text")
         words = _words_from_pdf(page, page_number)
 
@@ -119,6 +124,11 @@ def read_pdf(
                 )
             )
             used_digital = True
+            notify_progress(
+                progress,
+                f"Reading page {page_number} of {page_count}",
+                page_percent,
+            )
             continue
 
         if not ocr_enabled:
@@ -126,6 +136,11 @@ def read_pdf(
                 "This PDF appears to be scanned, but OCR is disabled on the processing server."
             )
 
+        notify_progress(
+            progress,
+            f"Running OCR on page {page_number} of {page_count}",
+            page_percent,
+        )
         ocr_words, ocr_text, confidence = ocr_page(
             page,
             page_number,
@@ -152,6 +167,11 @@ def read_pdf(
             )
         )
         used_ocr = True
+        notify_progress(
+            progress,
+            f"Finished OCR for page {page_number} of {page_count}",
+            page_percent,
+        )
 
     title = document.metadata.get("title") if document.metadata else None
     document.close()

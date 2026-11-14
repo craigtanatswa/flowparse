@@ -51,6 +51,8 @@ export type Database = {
           opening_balance: number | null
           page_count: number | null
           processed_at: string | null
+          processing_stage: string | null
+          progress_percent: number | null
           report: Json
           statement_end: string | null
           statement_start: string | null
@@ -77,6 +79,8 @@ export type Database = {
           opening_balance?: number | null
           page_count?: number | null
           processed_at?: string | null
+          processing_stage?: string | null
+          progress_percent?: number | null
           report?: Json
           statement_end?: string | null
           statement_start?: string | null
@@ -103,6 +107,8 @@ export type Database = {
           opening_balance?: number | null
           page_count?: number | null
           processed_at?: string | null
+          processing_stage?: string | null
+          progress_percent?: number | null
           report?: Json
           statement_end?: string | null
           statement_start?: string | null
@@ -203,6 +209,7 @@ export type Database = {
           balance: number | null
           created_at: string
           credit: number | null
+          currency: string | null
           debit: number | null
           description: string
           edited: boolean
@@ -218,6 +225,7 @@ export type Database = {
           txn_date: string | null
           updated_at: string
           user_id: string
+          value_date: string | null
         }[]
       }
       mark_statement_failed: {
@@ -226,6 +234,10 @@ export type Database = {
       }
       save_extraction_result: {
         Args: { p_payload: Json; p_statement_id: string }
+        Returns: undefined
+      }
+      update_statement_progress: {
+        Args: { p_percent: number; p_stage: string; p_statement_id: string }
         Returns: undefined
       }
     }

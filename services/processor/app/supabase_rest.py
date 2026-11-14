@@ -114,6 +114,27 @@ class SupabaseRest:
             {"p_statement_id": statement_id, "p_payload": payload},
         )
 
+    def update_progress(self, statement_id: str, stage: str, percent: int) -> None:
+        """Record a real pipeline stage. Safe to call after a statement is gone."""
+        with self._client() as client:
+            response = client.patch(
+                f"{_base(self.settings)}/rest/v1/statements",
+                params={
+                    "id": f"eq.{statement_id}",
+                    "status": "in.(queued,processing)",
+                },
+                json={
+                    "processing_stage": stage[:160],
+                    "progress_percent": max(0, min(100, int(percent))),
+                },
+                headers=_headers(self.settings),
+            )
+        if response.status_code >= 400:
+            raise SupabaseError(
+                f"Could not update processing progress (status {response.status_code}).",
+                status_code=response.status_code,
+            )
+
     def mark_failed(self, statement_id: str, message: str) -> None:
         self._rpc(
             "mark_statement_failed",

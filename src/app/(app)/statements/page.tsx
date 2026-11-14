@@ -12,6 +12,7 @@ import {
 
 import { EmptyState } from "@/components/empty-state";
 import { PageHeader } from "@/components/page-header";
+import { ActiveRefresh } from "@/components/statements/active-refresh";
 import { StatementStatusBadge } from "@/components/statement-status-badge";
 import { logServerError } from "@/lib/log";
 import { StatementsToolbar } from "@/components/statements/statements-toolbar";
@@ -107,9 +108,14 @@ export default async function StatementsPage({
   const total = count ?? 0;
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
   const hasFilters = Boolean(query) || statusFilter.filter !== "all";
+  const hasActive = rows.some(
+    (statement) =>
+      statement.status === "queued" || statement.status === "processing"
+  );
 
   return (
     <>
+      <ActiveRefresh active={hasActive} />
       <PageHeader
         eyebrow="History"
         title="Statements"
@@ -204,6 +210,14 @@ export default async function StatementsPage({
                         </TableCell>
                         <TableCell>
                           <StatementStatusBadge status={readStatus(statement.status)} />
+                          {status === "processing" && statement.processing_stage ? (
+                            <p className="mt-1 max-w-[180px] truncate text-[10px] text-muted-foreground">
+                              {statement.processing_stage}
+                              {typeof statement.progress_percent === "number"
+                                ? ` · ${statement.progress_percent}%`
+                                : ""}
+                            </p>
+                          ) : null}
                         </TableCell>
                         <TableCell className="text-[11px] text-muted-foreground">
                           {formatDateTime(statement.created_at)}
@@ -268,7 +282,15 @@ export default async function StatementsPage({
                         <p className="mt-1 text-[10.5px] text-muted-foreground">
                           {validation.transaction_count
                             ? pluralize(validation.transaction_count, "row")
-                            : "No rows"} · {formatDateTime(statement.created_at)}
+                            : "No rows"}{" "}
+                          · {formatDateTime(statement.created_at)}
+                          {status === "processing" && statement.processing_stage
+                            ? ` · ${statement.processing_stage}${
+                                typeof statement.progress_percent === "number"
+                                  ? ` ${statement.progress_percent}%`
+                                  : ""
+                              }`
+                            : ""}
                         </p>
                       </div>
                     </Link>

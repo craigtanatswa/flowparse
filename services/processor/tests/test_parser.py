@@ -242,3 +242,37 @@ def test_bank_profile_detection() -> None:
     assert detect_bank_profile("EUROPA BANK").key == "generic"
     assert detect_bank_name("Barclays Bank PLC") == "Barclays"
     assert detect_bank_profile("EUROPA BANK").currency is None
+
+
+def test_progress_reports_real_monotonic_stages(fixtures) -> None:
+    updates: list[tuple[str, int]] = []
+
+    result = extract_pdf(
+        fixtures["digital"].read_bytes(),
+        ocr_enabled=False,
+        progress=lambda stage, percent: updates.append((stage, percent)),
+    )
+
+    assert result.status == "completed"
+    assert len(updates) >= 5
+    assert updates[0][0] == "Opening the PDF"
+    assert any("Parsing transactions" in stage for stage, _ in updates)
+    assert updates[-1][0] == "Preparing the transaction preview"
+    assert updates[-1][1] >= 90
+    percentages = [percent for _, percent in updates]
+    assert percentages == sorted(percentages)
+    assert all(0 <= percent <= 100 for percent in percentages)
+
+
+def test_progress_callback_failure_does_not_break_extraction(fixtures) -> None:
+    def explode(_stage: str, _percent: int) -> None:
+        raise RuntimeError("progress sink unavailable")
+
+    result = extract_pdf(
+        fixtures["digital"].read_bytes(),
+        ocr_enabled=False,
+        progress=explode,
+    )
+
+    assert result.status == "completed"
+    assert len(result.transactions) > 0
