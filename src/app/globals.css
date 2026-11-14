@@ -1,26 +1,200 @@
 @import "tailwindcss";
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
-}
-
 @theme inline {
+  --font-sans: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-geist-mono), ui-monospace, monospace;
+  --font-display: var(--font-poppins), var(--font-geist-sans), ui-sans-serif, system-ui,
+    sans-serif;
+
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  --radius-2xl: calc(var(--radius) + 8px);
+
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-muted: var(--sidebar-muted);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-border: var(--sidebar-border);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+:root {
+  --radius: 0.75rem;
+  --background: #ffffff;
+  --foreground: #101c18;
+  --card: #ffffff;
+  --card-foreground: #101c18;
+  --popover: #ffffff;
+  --popover-foreground: #101c18;
+  --primary: #0e7a66;
+  --primary-foreground: #f8fffc;
+  --secondary: #f2f5f4;
+  --secondary-foreground: #1d2e28;
+  --muted: #f5f7f6;
+  --muted-foreground: #66756f;
+  --accent: #eaf6f1;
+  --accent-foreground: #085c4d;
+  --destructive: #c9374a;
+  --destructive-foreground: #fff7f8;
+  --border: #e7ebe9;
+  --input: #d7dedb;
+  --ring: #0e7a66;
+  --sidebar: #ffffff;
+  --sidebar-foreground: #101c18;
+  --sidebar-muted: #66756f;
+  --sidebar-accent: #edf7f2;
+  --sidebar-border: #e7ebe9;
+}
+
+* {
+  border-color: var(--border);
+}
+
+html {
+  scroll-behavior: smooth;
 }
 
 body {
   background: var(--background);
   color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  font-family: var(--font-sans);
+  font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+h1,
+h2,
+h3,
+h4,
+.font-display {
+  font-family: var(--font-display);
+  font-feature-settings: normal;
+}
+
+::selection {
+  background: #c9ebdf;
+  color: #083d33;
+}
+
+input[type="date"]::-webkit-calendar-picker-indicator {
+  opacity: 0.45;
+  cursor: pointer;
+}
+
+input[type="date"]::-webkit-calendar-picker-indicator:hover {
+  opacity: 0.8;
+}
+
+@keyframes overlay-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes dialog-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, -48%) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1);
+  }
+}
+
+@keyframes shimmer {
+  0% {
+    background-position: -200% 0;
+  }
+  100% {
+    background-position: 200% 0;
+  }
+}
+
+@keyframes progress-slide {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(250%);
+  }
+}
+
+.marketing-grid {
+  background-image:
+    linear-gradient(to right, rgba(16, 28, 24, 0.045) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(16, 28, 24, 0.045) 1px, transparent 1px);
+  background-size: 38px 38px;
+}
+
+.brand-rings {
+  background-image: radial-gradient(
+    circle at center,
+    rgba(14, 122, 102, 0.13) 0.6px,
+    transparent 0.6px
+  );
+  background-size: 22px 22px;
+}
+
+.marketing-fade {
+  mask-image: radial-gradient(
+    ellipse 80% 70% at 60% 35%,
+    black 20%,
+    transparent 100%
+  );
+}
+
+.skeleton-shimmer {
+  background: linear-gradient(90deg, #eef1f0 25%, #f8faf9 50%, #eef1f0 75%);
+  background-size: 200% 100%;
+  animation: shimmer 1.8s infinite linear;
+}
+
+.thin-scrollbar {
+  scrollbar-width: thin;
+  scrollbar-color: #d7dedb transparent;
+}
+
+.upload-progress::after {
+  content: "";
+  position: absolute;
+  inset-block: 0;
+  width: 40%;
+  border-radius: 9999px;
+  background: var(--primary);
+  animation: progress-slide 1.2s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+  }
 }
