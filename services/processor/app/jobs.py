@@ -71,8 +71,9 @@ class JobManager:
             last_progress = key
             try:
                 db.update_progress(statement_id, stage, percent)
-            except SupabaseError:
+            except Exception:
                 # Progress is telemetry, not a reason to fail an extraction.
+                # Catch transport errors as well as rejected HTTP responses.
                 logger.debug(
                     "Could not record progress for statement %s", statement_id
                 )

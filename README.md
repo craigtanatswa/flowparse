@@ -17,7 +17,7 @@ FlowParse is a commercial-ready SaaS MVP that converts PDF bank statements into 
 | Landing page | Product positioning, upload demonstration, how it works, features, supported formats, security, pricing, FAQ, and footer |
 | Authentication | Email/password sign-up, sign-in, sign-out, forgot password, and password reset |
 | Dashboard | Statement totals, transaction totals, rows needing review, failed conversions, monthly allowance, and recent conversions |
-| Conversion workspace | Multi-file drag and drop, PDF validation, live processing status, editable ledger, reconciliation, extraction report, retry, delete, and exports |
+| Conversion workspace | Multi-file drag and drop, PDF validation, real stage/percentage progress, editable ledger, reconciliation, extraction report, per-file retry, delete, and exports |
 | History | All statements with dates, transaction counts, statuses, and direct Excel/CSV downloads |
 | Settings | Profile editing, subscription information, real monthly/total usage, plan limits, and security details |
 | Exports | Formula-safe CSV and formatted XLSX with statement summary, reconciliation details, transactions, value dates, per-row currencies, and review notes |
@@ -28,6 +28,10 @@ FlowParse is a commercial-ready SaaS MVP that converts PDF bank statements into 
 | Bank support | Generic layout engine plus conservative declarative profiles for UK, US, and Australian banks |
 
 Supported statement statuses are **Uploaded**, **Queued**, **Processing**, **Extracted** (`completed`), **Needs review** (`partial`), and **Failed**. The UI and exports use the same status vocabulary.
+
+While a statement is queued or processing, the processor writes the current pipeline stage and a real completion percentage to the database. The percentage advances only when the processor reaches the corresponding step, so the workspace, statement history, and dashboard show actual work rather than a timer. Terminal states are finalised by a database trigger: **Extracted** and **Needs review** end at 100%, and failed extractions record **Extraction failed** with a 100% terminal mark. Active status pages refresh every three seconds until processing finishes.
+
+Failed conversions can be retried from the upload batch or the statement page. A retry is allowed only when the statement has no saved rows; completed or partially extracted statements are locked so a re-run cannot overwrite reviewed data. Extraction writes replace the statement's rows atomically, so retrying a failed document never appends duplicate transactions.
 
 ---
 
@@ -56,13 +60,13 @@ Supabase Postgres (RLS) ◄──── Supabase Auth
 2. `POST /api/statements` verifies authentication, checks the monthly allowance, inserts an ownership-scoped statement row, and returns a signed upload URL for `{user_id}/{statement_id}/original.pdf`.
 3. The browser uploads the PDF directly to the private `statements` bucket. The service-role key never reaches the browser.
 4. `POST /api/statements/:id/process` verifies ownership and queues work with the Python processor using a shared `X-Processor-Key`.
-5. The processor re-checks ownership, atomically claims the statement, downloads the PDF, and extracts rows.
+5. The processor re-checks ownership, atomically claims the statement, downloads the PDF, and extracts rows. As each pipeline step starts, it persists a PII-free stage label and monotonic percentage; progress reporting failures never fail a readable extraction.
 6. The extraction engine reads the text layer. If a page does not contain enough usable text, it renders that page and falls back to Tesseract OCR.
 7. The parser builds geometric lines and words, detects header columns and table anchors, then extracts dates, value dates, references, descriptions, debit/credit/balance amounts, and row currencies. It uses running balances and sign/marker evidence to separate debits from credits, and falls back to headerless-layout inference when no header is present.
 8. Bank metadata, statement period, opening/closing balances, date order, and currency are normalised. Ambiguous dates, currencies, amounts, OCR pages, and duplicate rows are flagged and retained. Unresolved source lines are reported instead of guessed.
 9. Validation checks opening balance + credits − debits against the stated closing balance, verifies running balances, row completeness, and duplicates, and records an extraction confidence level.
-10. Results are saved through security-definer RPCs that revalidate the statement owner. The statement becomes `completed`, `partial`, or `failed`.
-11. The workspace polls the authenticated API until processing finishes, then shows the editable ledger, reconciliation panel, and extraction report.
+10. Results are saved through security-definer RPCs that revalidate the statement owner. The statement becomes `completed`, `partial`, or `failed`; a trigger marks terminal progress, and extraction replaces any prior rows in the same transaction.
+11. The workspace polls the authenticated API until processing finishes, shows the live stage and percentage, then shows the editable ledger, reconciliation panel, and extraction report. Failed batch items keep an inline retry action, and active list pages refresh themselves.
 12. Excel and CSV exports are generated on the server after an ownership check. PDF access is also authenticated and ownership-scoped.
 
 The processor is an independent long-running service. Next.js only submits jobs; it does not download or parse PDFs itself. This keeps OCR memory and CPU usage off the web tier.
@@ -79,8 +83,9 @@ The engine is split into focused modules under `services/processor/app/extract/`
 | `dates.py` | Date token parsing, date-order inference, statement-period detection, value dates |
 | `normalisation.py` | Description whitespace normalisation and per-row currency resolution |
 | `validation.py` | Balance reconciliation, running-balance checks, duplicate detection, OCR-confidence assessment |
-| `parser.py` | Layout/table orchestration, header and column detection, row reconstruction, review flags |
+| `parser.py` | Layout/table orchestration, header and column detection, row reconstruction, review flags, stage progress |
 | `banks/` | Declarative bank profiles, detection registry, and the generic fallback |
+| `progress.py` | Progress callback type and failure-isolated notifier used by the pipeline |
 | `pipeline.py` | Public `extract_pdf()` entry point used by the API job runner |
 
 Supported input and layout characteristics:
@@ -233,7 +238,7 @@ npx supabase db reset
 npx supabase status -o env
 ```
 
-`db reset` applies both migrations and recreates the private `statements` bucket. `supabase status -o env` prints the local anon and service-role keys. If you change the ports in `supabase/config.toml`, update the env files to match.
+`db reset` applies all migrations and recreates the private `statements` bucket. `supabase status -o env` prints the local anon and service-role keys. If you change the ports in `supabase/config.toml`, update the env files to match.
 
 Create `.env.local` in the repository root:
 
@@ -383,7 +388,7 @@ All web routes require an authenticated Supabase session unless noted.
 | `POST` | `/api/statements` | Check allowance, create statement, return signed upload URL |
 | `GET` | `/api/statements/:id` | Load statement and ordered transactions |
 | `DELETE` | `/api/statements/:id` | Delete statement, transactions, and stored PDF |
-| `POST` | `/api/statements/:id/process` | Queue or retry extraction |
+| `POST` | `/api/statements/:id/process` | Queue or retry extraction; completed conversions return `409` |
 | `POST` | `/api/statements/:id/transactions` | Save upserts and deletes atomically |
 | `GET` | `/api/statements/:id/file` | Stream the original private PDF |
 | `GET` | `/api/statements/:id/export?format=csv` | Download CSV |
@@ -427,7 +432,7 @@ cd services/processor
 python -m pytest -q
 ```
 
-The processor suite currently contains 31 tests covering:
+The processor suite currently contains 33 tests covering:
 
 - digital, US, European, value-date/reference, inline value-date, year-end yearless dates, headerless, duplicate, unsupported, and scanned layouts;
 - date-order inference, year-end date alignment, and dashed/named month parsing;
@@ -435,7 +440,10 @@ The processor suite currently contains 31 tests covering:
 - password-protected and corrupt PDFs;
 - low-OCR-confidence flags and forced `partial` status;
 - bank profile detection;
-- reconciliation, duplicate detection, and validation checks.
+- reconciliation, duplicate detection, and validation checks;
+- monotonic real progress stages and tolerance of progress-sink failures.
+
+The end-to-end smoke test uploads a four-file batch (two digital, one scanned, one unsupported), verifies live stage/percentage progress, retries the failed file twice, confirms repaired retries complete without duplicate rows, checks completed jobs return `409`, edits rows, and downloads both CSV and XLSX.
 
 Regenerate fixtures and inspect a result without the UI:
 
@@ -453,11 +461,12 @@ Manual regression checklist:
 4. Upload a statement containing duplicate rows and verify both rows are kept, flagged, and counted in the duplicate check.
 5. Edit a description, value date, and row currency in the ledger, save, refresh, and confirm they persisted.
 6. Add a manual row, save, delete it, save again, and confirm the row count returns.
-7. Upload an invalid, password-protected, or unsupported PDF and confirm **Failed**, a clear error, retry, and manual-entry availability.
-8. Download XLSX and CSV; verify the files open, include value dates and per-row currencies, and reconcile with the summary.
-9. Sign in as a second account and confirm the first account's statement pages/API/files/exports all return `404`.
-10. Confirm the dashboard, history, and settings counts match the database.
-11. Check the landing and authenticated pages at desktop and mobile widths.
+7. Upload a batch containing valid, scanned, and unsupported PDFs; confirm each shows a real stage and percentage, the unsupported file ends **Failed** with a clear error, retry is available inline, and retrying does not duplicate rows.
+8. Retry a completed conversion and confirm the API returns `409` instead of overwriting reviewed data.
+9. Download XLSX and CSV; verify the files open, include value dates and per-row currencies, and reconcile with the summary.
+10. Sign in as a second account and confirm the first account's statement pages/API/files/exports all return `404`.
+11. Confirm the dashboard, history, and settings counts match the database.
+12. Check the landing and authenticated pages at desktop and mobile widths.
 
 Lighthouse checks were used during development to bring the landing, auth, dashboard, history, settings, and statement workspace pages to **100 accessibility, 100 best practices, and 100 SEO**.
 
