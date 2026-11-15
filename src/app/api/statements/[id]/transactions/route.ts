@@ -29,7 +29,7 @@ export async function POST(request: Request, { params }: RouteContext) {
 
   const { user, supabase } = context;
   const { data: statement, error: statementError } = await supabase
-    .from("statements")
+    .from("uploaded_documents")
     .select("id")
     .eq("id", id)
     .eq("user_id", user.id)
@@ -54,7 +54,7 @@ export async function POST(request: Request, { params }: RouteContext) {
   }));
 
   const { error: saveError } = await supabase.rpc("apply_transaction_changes", {
-    p_statement_id: id,
+    p_document_id: id,
     p_upserts: upserts,
     p_deletes: parsed.data.deletes,
   });
@@ -76,11 +76,11 @@ export async function POST(request: Request, { params }: RouteContext) {
 
   const [{ data: updatedStatement, error: reloadStatementError }, { data: transactions, error: reloadTransactionsError }] =
     await Promise.all([
-      supabase.from("statements").select("*").eq("id", id).maybeSingle(),
+      supabase.from("uploaded_documents").select("*").eq("id", id).maybeSingle(),
       supabase
-        .from("transactions")
+        .from("extracted_transactions")
         .select("*")
-        .eq("statement_id", id)
+        .eq("document_id", id)
         .order("sort_index", { ascending: true })
         .order("created_at", { ascending: true }),
     ]);

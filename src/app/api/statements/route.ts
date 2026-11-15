@@ -1,11 +1,12 @@
 import { NextResponse } from "next/server";
 
+import { loadAccountData } from "@/lib/account";
 import { getApiContext, jsonError, sanitizeFileName } from "@/lib/api";
 import { STATEMENTS_BUCKET } from "@/lib/constants";
 import {
-  FREE_PLAN,
   currentMonthStartIso,
   nextAllowanceReset,
+  planFileSizeBytes,
   planLimitReached,
 } from "@/lib/plans";
 import { uploadCreateSchema } from "@/lib/validation";
@@ -28,23 +29,39 @@ export async function POST(request: Request) {
   }
 
   const { user, supabase } = context;
+  const account = await loadAccountData(supabase, user.id);
+  const { plan } = account;
 
-  const { count: monthlyStatements, error: usageError } = await supabase
-    .from("statements")
-    .select("id", { count: "exact", head: true })
-    .gte("created_at", currentMonthStartIso());
-
-  if (usageError) {
-    logServerError("Could not check monthly statement allowance", usageError);
+  if (parsed.data.fileSize > planFileSizeBytes(plan)) {
     return jsonError(
-      "Could not verify your monthly allowance. Please try again.",
-      500
+      `PDFs must be ${plan.fileSizeMb} MB or smaller on the ${plan.name} plan.`,
+      413
     );
   }
 
-  if (planLimitReached(monthlyStatements ?? 0)) {
+  let monthlyStatements = account.usage.documents_uploaded;
+
+  if (!account.usageAvailable) {
+    // Usage triggers should always have a row, but fall back to a direct count
+    // so a transient trigger/read failure does not block uploads.
+    const { count, error: usageError } = await supabase
+      .from("uploaded_documents")
+      .select("id", { count: "exact", head: true })
+      .gte("created_at", currentMonthStartIso());
+
+    if (usageError) {
+      logServerError("Could not check monthly statement allowance", usageError);
+      return jsonError(
+        "Could not verify your monthly allowance. Please try again.",
+        500
+      );
+    }
+    monthlyStatements = count ?? 0;
+  }
+
+  if (planLimitReached(monthlyStatements, plan.statementLimit)) {
     return jsonError(
-      `You have reached the ${FREE_PLAN.name} plan limit of ${FREE_PLAN.statementLimit} statements this month. Your allowance resets on ${nextAllowanceReset()}.`,
+      `You have reached the ${plan.name} plan limit of ${plan.statementLimit} statements this month. Your allowance resets on ${nextAllowanceReset()}.`,
       403
     );
   }
@@ -53,7 +70,7 @@ export async function POST(request: Request) {
   const fileName = sanitizeFileName(parsed.data.fileName);
   const storagePath = `${user.id}/${statementId}/original.pdf`;
 
-  const { error: insertError } = await supabase.from("statements").insert({
+  const { error: insertError } = await supabase.from("uploaded_documents").insert({
     id: statementId,
     user_id: user.id,
     file_name: fileName,
@@ -74,7 +91,7 @@ export async function POST(request: Request) {
 
   if (signError || !signedUpload) {
     logServerError("Could not create signed upload URL", signError);
-    await supabase.from("statements").delete().eq("id", statementId);
+    await supabase.from("uploaded_documents").delete().eq("id", statementId);
     return jsonError(
       "Could not prepare secure storage for this file. Please try again.",
       500

@@ -15,7 +15,7 @@ export async function GET(_request: Request, { params }: RouteContext) {
 
   const { supabase } = context;
   const { data: statement, error: statementError } = await supabase
-    .from("statements")
+    .from("uploaded_documents")
     .select("*")
     .eq("id", id)
     .maybeSingle();
@@ -27,9 +27,9 @@ export async function GET(_request: Request, { params }: RouteContext) {
   if (!statement) return jsonError("Statement not found.", 404);
 
   const { data: transactions, error: transactionsError } = await supabase
-    .from("transactions")
+    .from("extracted_transactions")
     .select("*")
-    .eq("statement_id", id)
+    .eq("document_id", id)
     .order("sort_index", { ascending: true })
     .order("created_at", { ascending: true });
 
@@ -53,7 +53,7 @@ export async function DELETE(_request: Request, { params }: RouteContext) {
 
   const { supabase } = context;
   const { data: statement, error: loadError } = await supabase
-    .from("statements")
+    .from("uploaded_documents")
     .select("id,storage_path")
     .eq("id", id)
     .maybeSingle();
@@ -65,7 +65,7 @@ export async function DELETE(_request: Request, { params }: RouteContext) {
   if (!statement) return jsonError("Statement not found.", 404);
 
   const { error: deleteError } = await supabase
-    .from("statements")
+    .from("uploaded_documents")
     .delete()
     .eq("id", id);
 

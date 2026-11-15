@@ -81,7 +81,7 @@ export default async function StatementsPage({
   const requestedPage = Math.max(1, Number.parseInt(params.page ?? "1", 10) || 1);
 
   let request = supabase
-    .from("statements")
+    .from("uploaded_documents")
     .select("*", { count: "exact" })
     .order("created_at", { ascending: false });
 

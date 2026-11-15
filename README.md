@@ -29,7 +29,7 @@ FlowParse is a commercial-ready SaaS MVP that converts PDF bank statements into 
 
 Supported statement statuses are **Uploaded**, **Queued**, **Processing**, **Extracted** (`completed`), **Needs review** (`partial`), and **Failed**. The UI and exports use the same status vocabulary.
 
-While a statement is queued or processing, the processor writes the current pipeline stage and a real completion percentage to the database. The percentage advances only when the processor reaches the corresponding step, so the workspace, statement history, and dashboard show actual work rather than a timer. Terminal states are finalised by a database trigger: **Extracted** and **Needs review** end at 100%, and failed extractions record **Extraction failed** with a 100% terminal mark. Active status pages refresh every three seconds until processing finishes.
+While a statement is queued or processing, the processor writes the current pipeline stage and a real completion percentage to the database. The percentage advances only when the processor reaches the corresponding step, so the workspace, statement history, and dashboard show actual work rather than a timer. Each attempt is recorded in `conversion_jobs`; the document keeps a denormalised status and progress copy so the existing dashboard and history views stay cheap to render. Terminal states are finalised by a database trigger: **Extracted** and **Needs review** end at 100%, and failed extractions record **Extraction failed** with a 100% terminal mark. Active status pages refresh every three seconds until processing finishes.
 
 Failed conversions can be retried from the upload batch or the statement page. A retry is allowed only when the statement has no saved rows; completed or partially extracted statements are locked so a re-run cannot overwrite reviewed data. Extraction writes replace the statement's rows atomically, so retrying a failed document never appends duplicate transactions.
 
@@ -57,15 +57,15 @@ Supabase Postgres (RLS) ◄──── Supabase Auth
 ### Conversion flow
 
 1. The browser validates the PDF header and file size, then asks the Next.js API to create the statement.
-2. `POST /api/statements` verifies authentication, checks the monthly allowance, inserts an ownership-scoped statement row, and returns a signed upload URL for `{user_id}/{statement_id}/original.pdf`.
+2. `POST /api/statements` verifies authentication, loads the user's profile and subscription plan, checks the monthly allowance from `usage_records`, inserts an ownership-scoped `uploaded_documents` row, and returns a signed upload URL for `{user_id}/{document_id}/original.pdf`.
 3. The browser uploads the PDF directly to the private `statements` bucket. The service-role key never reaches the browser.
-4. `POST /api/statements/:id/process` verifies ownership and queues work with the Python processor using a shared `X-Processor-Key`.
-5. The processor re-checks ownership, atomically claims the statement, downloads the PDF, and extracts rows. As each pipeline step starts, it persists a PII-free stage label and monotonic percentage; progress reporting failures never fail a readable extraction.
+4. `POST /api/statements/:id/process` verifies ownership, calls the `queue_conversion` RPC to create the next `conversion_jobs` attempt, and queues work with the Python processor using a shared `X-Processor-Key`.
+5. The processor re-checks the job and document owner, atomically claims the queued job, downloads the PDF, and extracts rows. As each pipeline step starts, it persists a PII-free stage label and monotonic percentage; progress reporting failures never fail a readable extraction.
 6. The extraction engine reads the text layer. If a page does not contain enough usable text, it renders that page and falls back to Tesseract OCR.
 7. The parser builds geometric lines and words, detects header columns and table anchors, then extracts dates, value dates, references, descriptions, debit/credit/balance amounts, and row currencies. It uses running balances and sign/marker evidence to separate debits from credits, and falls back to headerless-layout inference when no header is present.
 8. Bank metadata, statement period, opening/closing balances, date order, and currency are normalised. Ambiguous dates, currencies, amounts, OCR pages, and duplicate rows are flagged and retained. Unresolved source lines are reported instead of guessed.
 9. Validation checks opening balance + credits − debits against the stated closing balance, verifies running balances, row completeness, and duplicates, and records an extraction confidence level.
-10. Results are saved through security-definer RPCs that revalidate the statement owner. The statement becomes `completed`, `partial`, or `failed`; a trigger marks terminal progress, and extraction replaces any prior rows in the same transaction.
+10. Results are saved through the service-role-only `save_extraction_result` RPC. It revalidates the job/document pair, replaces the document's `extracted_transactions` atomically, updates the job and document to `completed`, `partial`, or `failed`, and the usage triggers update the monthly counters.
 11. The workspace polls the authenticated API until processing finishes, shows the live stage and percentage, then shows the editable ledger, reconciliation panel, and extraction report. Failed batch items keep an inline retry action, and active list pages refresh themselves.
 12. Excel and CSV exports are generated on the server after an ownership check. PDF access is also authenticated and ownership-scoped.
 
@@ -151,14 +151,15 @@ src/
     ui/                          Shared UI primitives
   lib/
     supabase/                    Browser, server, and middleware clients
-    plans.ts                     Free plan and allowance helpers
+    account.ts                   Profile, subscription plan, and usage loader
+    plans.ts                     Plan catalogue helpers and allowance formatting
     validation.ts                Zod request schemas
     export.ts                    CSV and XLSX generation
 public/
   brand/                         Logo lockups, glyphs, and app icon assets
 supabase/
   config.toml                    Local Supabase ports and auth settings
-  migrations/                    Schema, RLS, storage, RPCs
+  migrations/                    Schema, RLS, storage, triggers, and RPCs
 services/processor/
   app/main.py                    FastAPI health and job endpoints
   app/jobs.py                    Job manager and extraction execution
@@ -364,18 +365,39 @@ If the processor variables are missing, uploads still succeed but processing is 
 
 ---
 
+## Database schema
+
+The backend is defined by the SQL migrations in `supabase/migrations/`. The original MVP tables are renamed in place, so existing documents, transactions, and relationships keep their ids and data.
+
+| Table | Purpose | Ownership |
+| --- | --- | --- |
+| `profiles` | One row per auth user, created by an `auth.users` trigger; stores display name, company, email, and `plan_id` | `id = auth.users.id` |
+| `subscription_plans` | Plan catalogue and limits (`free`, `team`, ...) | Public read-only |
+| `uploaded_documents` | Private source PDF metadata plus the denormalised current status/progress used by the UI | `user_id` |
+| `conversion_jobs` | One extraction attempt per document, with attempt number, status, stage, progress, timestamps, and error | `user_id` + `document_id` |
+| `extracted_transactions` | Structured ledger rows linked to the document and the job that produced them | `user_id` + `document_id` |
+| `usage_records` | Monthly counters per user: documents uploaded, conversions completed/failed, and storage bytes | `user_id` + `period_start` |
+
+`conversion_jobs.attempt` is unique per document. A failed document can be retried; each retry creates a new attempt and `save_extraction_result` replaces that document's rows atomically. Completed and partially extracted documents are locked so a re-run cannot overwrite reviewed data.
+
 ## Data and security model
 
-- `statements` and `transactions` live in Postgres and have RLS enabled.
-- Every policy compares `auth.uid()` with the row owner. Cross-user reads, edits, exports, PDF access, processing, and deletion return `404`.
-- PDFs live in the private `statements` bucket at `{user_id}/{statement_id}/original.pdf`. Storage policies restrict access to the owning user's folder.
-- The browser uploads with a short-lived signed URL and never receives the service-role key.
-- The processor authenticates with the service role and calls security-definer RPCs. Those functions revalidate ownership and replace extracted rows atomically.
-- The web API always uses the request-scoped Supabase client, so RLS is the final authorization layer.
-- Exports and original PDFs are served by authenticated Next.js routes, not public URLs.
+- RLS is enabled on `profiles`, `conversion_jobs`, `uploaded_documents`, `extracted_transactions`, and `usage_records`. The plan catalogue is intentionally world-readable.
+- Every ownership policy compares `auth.uid()` with the row owner. Cross-user reads, edits, exports, PDF access, processing, and deletion return `404`.
+- `profiles` exposes only `select` and column-scoped `update (display_name, company)` to authenticated clients. `plan_id` cannot be changed from the browser; plan changes belong in a future billing function.
+- Clients can read only their own `conversion_jobs` and `usage_records`; both tables are server-write-only.
+- Transaction inserts require `auth.uid() = user_id`, a document owned by the same user, and a `job_id` that belongs to that document when present.
+- `queue_conversion` and `fail_conversion` are `SECURITY DEFINER` RPCs for authenticated callers. They verify ownership, lock the document/job row, refuse to overwrite completed data, and create or fail the next attempt.
+- The processor uses the service-role key and calls `save_extraction_result`, `mark_conversion_failed`, and `update_conversion_progress`. Those functions are not executable by `anon` or `authenticated`.
+- The inline editor calls `apply_transaction_changes`, a security-invoker RPC that runs under the user's RLS context.
+- Usage counters are maintained by triggers on document insert/delete and terminal status changes, then backfilled from existing data by the migration. Clients cannot write usage directly.
+- PDFs live in the private `statements` bucket at `{user_id}/{document_id}/original.pdf`. Storage policies restrict each object to the owning user's folder.
+- The browser uploads with a short-lived signed URL and never receives the service-role key. Original PDFs and exports are streamed only by authenticated Next.js routes.
+- Hosted Storage sits behind a CDN that ignores `Cache-Control`/`Pragma` request headers, so the processor downloads each source PDF through a unique query string. Without that, replacing a damaged source object can keep serving the old bytes for up to an hour.
 - CSV free-text cells are neutralized against spreadsheet formula injection.
-- Uploads are limited to `application/pdf`; the storage bucket enforces the same MIME type and a 25 MiB cap.
+- Uploads are limited to `application/pdf`; the storage bucket enforces the same MIME type and a 25 MiB cap. The plan's `file_size_mb` is also enforced by `POST /api/statements`.
 - API responses use `Cache-Control: no-store` or `private, no-store`.
+- The processor's service-role key exists only in its runtime environment; never prefix it with `NEXT_PUBLIC_`.
 
 ---
 
@@ -385,10 +407,10 @@ All web routes require an authenticated Supabase session unless noted.
 
 | Method | Route | Purpose |
 | --- | --- | --- |
-| `POST` | `/api/statements` | Check allowance, create statement, return signed upload URL |
-| `GET` | `/api/statements/:id` | Load statement and ordered transactions |
-| `DELETE` | `/api/statements/:id` | Delete statement, transactions, and stored PDF |
-| `POST` | `/api/statements/:id/process` | Queue or retry extraction; completed conversions return `409` |
+| `POST` | `/api/statements` | Load profile/plan, check allowance, create document, return signed upload URL |
+| `GET` | `/api/statements/:id` | Load document and ordered transactions |
+| `DELETE` | `/api/statements/:id` | Delete document, jobs, transactions, and stored PDF |
+| `POST` | `/api/statements/:id/process` | Queue the next conversion attempt; returns `jobId`; completed conversions return `409` |
 | `POST` | `/api/statements/:id/transactions` | Save upserts and deletes atomically |
 | `GET` | `/api/statements/:id/file` | Stream the original private PDF |
 | `GET` | `/api/statements/:id/export?format=csv` | Download CSV |
@@ -400,20 +422,28 @@ The processor endpoints are not exposed through the Next.js app and should not b
 
 ---
 
-## Plan and processing limits
+## Plans and usage tracking
 
-| Limit | Value |
-| --- | --- |
-| Free plan statements | 25 per calendar month (UTC) |
-| Batch size | 10 PDFs per upload |
-| File size | 25 MB per PDF |
-| Page count | 100 pages per PDF |
-| OCR | Enabled by default; English |
-| Stale jobs | Marked failed after 20 minutes at processor startup |
+Plans live in `subscription_plans`, so limits can be changed without a redeploy. The seed migration includes:
 
-The monthly allowance is checked server-side in `POST /api/statements` and shown in the dashboard and settings. The allowance resets on the first day of the next month. There is currently no paid billing integration; the Team plan is displayed as "Coming soon" and no payment is collected.
+| Plan | Statements / month | Files per batch | PDF size | Status |
+| --- | --- | --- | --- | --- |
+| Free | 25 | 10 | 25 MB | Active |
+| Team | 500 | 20 | 25 MB | Placeholder (inactive) |
 
-Each uploaded file counts toward the monthly allowance when its statement row is created.
+Processing limits remain: 100 pages per PDF, OCR enabled by default (English), and stale jobs marked failed after 20 minutes at processor startup.
+
+`POST /api/statements` loads `profiles.plan_id`, reads the plan row, and compares the current month's `usage_records.documents_uploaded` with `subscription_plans.statement_limit`. The dashboard and settings page use the same profile/plan/usage loader.
+
+`usage_records` is maintained by database triggers:
+
+- a document insert increments `documents_uploaded` and `storage_bytes`;
+- a terminal status change increments `conversions_completed` or `conversions_failed`;
+- deleting a document decrements `documents_uploaded` and `storage_bytes`.
+
+The migration backfills usage from existing documents. Clients can read their own monthly record but cannot write it, and the processor does not update usage directly.
+
+There is currently no paid billing integration; the Team plan is seeded as inactive and no payment is collected. The allowance still uses a pre-insert check, so two simultaneous uploads at the exact limit can exceed it by one. A strict implementation would move the check and insert into a single transactional RPC.
 
 ---
 
@@ -444,6 +474,17 @@ The processor suite currently contains 33 tests covering:
 - monotonic real progress stages and tolerance of progress-sink failures.
 
 The end-to-end smoke test uploads a four-file batch (two digital, one scanned, one unsupported), verifies live stage/percentage progress, retries the failed file twice, confirms repaired retries complete without duplicate rows, checks completed jobs return `409`, edits rows, and downloads both CSV and XLSX.
+
+A backend security test signs up two isolated users and verifies:
+
+- profiles are created automatically on signup and start on the Free plan;
+- users can update their own `display_name` but cannot change `plan_id`;
+- cross-user profile reads and updates are blocked;
+- the plan catalogue is readable and the private bucket is not;
+- one user cannot read, delete, or process another user's document through RLS or the API;
+- `conversion_jobs` and `usage_records` are owner-readable and server-write-only;
+- transaction inserts cannot target another user's document or spoof `user_id`;
+- storage objects require the owner or a signed URL, and a signed URL returns the exact file bytes.
 
 Regenerate fixtures and inspect a result without the UI:
 
@@ -489,7 +530,9 @@ In **Authentication → URL Configuration**, set the site URL to your production
 https://your-app.example.com/auth/confirm
 ```
 
-Set up production SMTP for auth emails; local Mailpit is development-only. The migration creates the private bucket, MIME restriction, storage policies, and RPCs. Review the bucket size cap and the app's `MAX_FILE_BYTES` together if you change limits.
+Set up production SMTP for auth emails; local Mailpit is development-only. The migrations create the private bucket, MIME restriction, storage policies, profile trigger, plan catalogue, usage triggers, conversion jobs, and all RPCs. Review the bucket size cap and the app's `MAX_FILE_BYTES` together if you change limits.
+
+After `db push`, confirm that `subscription_plans` contains the seeded `free` plan and that `profiles` has a row for every existing auth user. New signups create their profile automatically through the `on_auth_user_created` trigger.
 
 If you use the optional `NEXT_PUBLIC_SITE_URL`, set it to the canonical HTTPS origin. The `/auth/confirm` route also derives the request origin from forwarded headers so cookie exchange works on the same host.
 

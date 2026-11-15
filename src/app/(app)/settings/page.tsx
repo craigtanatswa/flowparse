@@ -3,27 +3,27 @@ import Link from "next/link";
 import {
   ArrowRight,
   ArrowUpRight,
+  CheckCircle2,
   CreditCard,
   FileText,
   Gauge,
+  HardDrive,
   KeyRound,
   LockKeyhole,
   Mail,
   ShieldCheck,
   UserRound,
+  XCircle,
 } from "lucide-react";
 
 import { PageHeader } from "@/components/page-header";
 import { ProfileForm } from "@/components/app/profile-form";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { loadAccountData } from "@/lib/account";
 import { requireUser } from "@/lib/auth";
 import { logServerError } from "@/lib/log";
-import {
-  FREE_PLAN,
-  currentMonthStartIso,
-  nextAllowanceReset,
-} from "@/lib/plans";
+import { nextAllowanceReset } from "@/lib/plans";
 import { formatFileSize, pluralize } from "@/lib/utils";
 
 export const metadata: Metadata = { title: "Settings" };
@@ -40,29 +40,28 @@ function formatMemberSince(value: string): string {
 
 export default async function SettingsPage() {
   const { user, supabase } = await requireUser();
-  const monthStart = currentMonthStartIso();
 
-  const [totalResult, monthResult, transactionResult] = await Promise.all([
-    supabase.from("statements").select("id", { count: "exact", head: true }),
+  const [account, totalResult, transactionResult] = await Promise.all([
+    loadAccountData(supabase, user.id),
+    supabase.from("uploaded_documents").select("id", { count: "exact", head: true }),
     supabase
-      .from("statements")
-      .select("id", { count: "exact", head: true })
-      .gte("created_at", monthStart),
-    supabase.from("transactions").select("id", { count: "exact", head: true }),
+      .from("extracted_transactions")
+      .select("id", { count: "exact", head: true }),
   ]);
 
-  for (const result of [totalResult, monthResult, transactionResult]) {
+  for (const result of [totalResult, transactionResult]) {
     if (result.error) {
       logServerError("Could not load account usage", result.error);
     }
   }
 
+  const { plan, usage } = account;
   const totalStatements = totalResult.count ?? 0;
-  const monthStatements = monthResult.count ?? 0;
+  const monthStatements = usage.documents_uploaded;
   const transactionCount = transactionResult.count ?? 0;
   const usagePercent = Math.min(
     100,
-    Math.round((monthStatements / FREE_PLAN.statementLimit) * 100)
+    Math.round((monthStatements / plan.statementLimit) * 100)
   );
 
   const metadataName =
@@ -70,6 +69,7 @@ export default async function SettingsPage() {
       ? user.user_metadata.full_name
       : "";
   const displayName =
+    account.profile?.display_name?.trim() ||
     metadataName ||
     user.email?.split("@")[0]?.replace(/[._-]+/g, " ") ||
     "Your account";
@@ -115,7 +115,7 @@ export default async function SettingsPage() {
               </div>
 
               <div className="mt-5">
-                <ProfileForm initialName={metadataName} />
+                <ProfileForm initialName={account.profile?.display_name ?? ""} />
               </div>
 
               <dl className="mt-5 grid gap-3 border-t border-border/70 pt-5 text-[11.5px] sm:grid-cols-2">
@@ -196,7 +196,7 @@ export default async function SettingsPage() {
                       Subscription
                     </p>
                     <p className="text-[14px] font-semibold text-foreground">
-                      {FREE_PLAN.name} plan
+                      {plan.name} plan
                     </p>
                   </div>
                 </div>
@@ -207,33 +207,33 @@ export default async function SettingsPage() {
 
               <div className="mt-5 flex items-end gap-1.5">
                 <span className="text-[34px] font-semibold leading-none tracking-[-0.04em]">
-                  {FREE_PLAN.price}
+                  {plan.priceDisplay}
                 </span>
                 <span className="pb-0.5 text-[11.5px] text-muted-foreground">
-                  / month
+                  / {plan.cadence}
                 </span>
               </div>
               <p className="mt-2 text-[11.5px] leading-5 text-muted-foreground">
-                {FREE_PLAN.description}
+                {plan.description}
               </p>
 
               <ul className="mt-4 space-y-2 border-t border-border/70 pt-4 text-[11.5px] text-foreground/75">
                 <li className="flex items-center justify-between gap-3">
                   <span>Statements per month</span>
                   <span className="font-medium text-foreground">
-                    {FREE_PLAN.statementLimit}
+                    {plan.statementLimit}
                   </span>
                 </li>
                 <li className="flex items-center justify-between gap-3">
                   <span>Maximum PDF size</span>
                   <span className="font-medium text-foreground">
-                    {FREE_PLAN.fileSizeMb} MB
+                    {plan.fileSizeMb} MB
                   </span>
                 </li>
                 <li className="flex items-center justify-between gap-3">
                   <span>Files per batch</span>
                   <span className="font-medium text-foreground">
-                    {FREE_PLAN.batchLimit}
+                    {plan.batchLimit}
                   </span>
                 </li>
               </ul>
@@ -274,7 +274,7 @@ export default async function SettingsPage() {
                   <p className="mt-1 text-[24px] font-semibold leading-none tracking-[-0.03em]">
                     {monthStatements}
                     <span className="ml-1 text-[12px] font-normal text-muted-foreground">
-                      of {FREE_PLAN.statementLimit}
+                      of {plan.statementLimit}
                     </span>
                   </p>
                 </div>
@@ -288,7 +288,7 @@ export default async function SettingsPage() {
                 role="progressbar"
                 aria-valuenow={monthStatements}
                 aria-valuemin={0}
-                aria-valuemax={FREE_PLAN.statementLimit}
+                aria-valuemax={plan.statementLimit}
                 aria-label="Monthly statement allowance used"
               >
                 <div
@@ -317,11 +317,38 @@ export default async function SettingsPage() {
                 </div>
                 <div className="flex items-center justify-between gap-3">
                   <dt className="flex items-center gap-2 text-muted-foreground">
+                    <CheckCircle2 className="size-3.5" />
+                    Conversions completed
+                  </dt>
+                  <dd className="font-medium text-foreground">
+                    {usage.conversions_completed}
+                  </dd>
+                </div>
+                <div className="flex items-center justify-between gap-3">
+                  <dt className="flex items-center gap-2 text-muted-foreground">
+                    <XCircle className="size-3.5" />
+                    Conversions failed
+                  </dt>
+                  <dd className="font-medium text-foreground">
+                    {usage.conversions_failed}
+                  </dd>
+                </div>
+                <div className="flex items-center justify-between gap-3">
+                  <dt className="flex items-center gap-2 text-muted-foreground">
+                    <HardDrive className="size-3.5" />
+                    Storage this month
+                  </dt>
+                  <dd className="font-medium text-foreground">
+                    {formatFileSize(usage.storage_bytes)}
+                  </dd>
+                </div>
+                <div className="flex items-center justify-between gap-3">
+                  <dt className="flex items-center gap-2 text-muted-foreground">
                     <LockKeyhole className="size-3.5" />
                     File size limit
                   </dt>
                   <dd className="font-medium text-foreground">
-                    {formatFileSize(FREE_PLAN.fileSizeMb * 1024 * 1024)}
+                    {formatFileSize(plan.fileSizeMb * 1024 * 1024)}
                   </dd>
                 </div>
               </dl>

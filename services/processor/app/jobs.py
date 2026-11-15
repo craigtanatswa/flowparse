@@ -8,7 +8,12 @@ from typing import Any
 from .config import Settings
 from .extract.models import ExtractionError, ExtractionResult
 from .extract.pipeline import extract_pdf
-from .supabase_rest import StatementConflict, StatementNotFound, SupabaseError, SupabaseRest
+from .supabase_rest import (
+    ConversionConflict,
+    DocumentNotFound,
+    SupabaseError,
+    SupabaseRest,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -27,40 +32,57 @@ class JobManager:
         self._active: set[str] = set()
         self._lock = threading.Lock()
 
-    def submit(self, statement_id: str, user_id: str) -> None:
+    def submit(self, document_id: str, job_id: str, user_id: str) -> None:
         with self._lock:
-            if statement_id in self._active:
-                raise StatementConflict("This statement is already queued for processing.")
-            self._active.add(statement_id)
+            if job_id in self._active:
+                raise ConversionConflict("This conversion is already queued for processing.")
+            self._active.add(job_id)
 
         db = SupabaseRest(self.settings)
         try:
-            statement = db.get_statement(statement_id)
-            if statement["user_id"] != user_id:
-                raise StatementNotFound("Statement not found.")
-            if statement["status"] in {"completed", "partial"}:
-                raise StatementConflict(
+            job = db.get_job(job_id)
+            if job["document_id"] != document_id or job["user_id"] != user_id:
+                raise DocumentNotFound("Document not found.")
+            if job["status"] in {"completed", "partial"}:
+                raise ConversionConflict(
                     "This statement has already been processed. Create a new upload to extract it again."
                 )
-            db.claim_statement(statement_id)
-            self.executor.submit(self._run_and_cleanup, statement)
+            if job["status"] not in {"queued", "processing"}:
+                raise ConversionConflict("This conversion is not queued for processing.")
+
+            document = db.get_document(document_id)
+            if document["user_id"] != user_id:
+                raise DocumentNotFound("Document not found.")
+            if document["status"] in {"completed", "partial"}:
+                raise ConversionConflict(
+                    "This statement has already been processed. Create a new upload to extract it again."
+                )
+
+            db.claim_job(job_id, document_id)
+            self.executor.submit(self._run_and_cleanup, document, job)
         except Exception:
             with self._lock:
-                self._active.discard(statement_id)
+                self._active.discard(job_id)
             raise
 
-    def _run_and_cleanup(self, statement: dict[str, Any]) -> None:
-        statement_id = str(statement["id"])
+    def _run_and_cleanup(self, document: dict[str, Any], job: dict[str, Any]) -> None:
+        job_id = str(job["id"])
         try:
-            self._run(statement)
+            self._run(document, job)
         finally:
             with self._lock:
-                self._active.discard(statement_id)
+                self._active.discard(job_id)
 
-    def _run(self, statement: dict[str, Any]) -> None:
-        statement_id = str(statement["id"])
+    def _run(self, document: dict[str, Any], job: dict[str, Any]) -> None:
+        document_id = str(document["id"])
+        job_id = str(job["id"])
         db = SupabaseRest(self.settings)
-        logger.info("Processing statement %s", statement_id)
+        logger.info(
+            "Processing document %s (job %s, attempt %s)",
+            document_id,
+            job_id,
+            job.get("attempt"),
+        )
         last_progress: tuple[str, int] | None = None
 
         def report(stage: str, percent: int) -> None:
@@ -70,24 +92,22 @@ class JobManager:
                 return
             last_progress = key
             try:
-                db.update_progress(statement_id, stage, percent)
+                db.update_progress(job_id, stage, percent)
             except Exception:
                 # Progress is telemetry, not a reason to fail an extraction.
                 # Catch transport errors as well as rejected HTTP responses.
-                logger.debug(
-                    "Could not record progress for statement %s", statement_id
-                )
+                logger.debug("Could not record progress for job %s", job_id)
 
         try:
             report("Preparing the document", 1)
-            file_size = int(statement.get("file_size") or 0)
+            file_size = int(document.get("file_size") or 0)
             if file_size > self.settings.max_file_bytes:
                 raise ExtractionError(
                     f"The PDF is larger than the {self.settings.max_file_mb} MB processing limit."
                 )
 
             report("Downloading the original PDF", 2)
-            data = db.download_statement(statement)
+            data = db.download_document(document)
             report("Checking the PDF", 4)
             result: ExtractionResult = extract_pdf(
                 data,
@@ -100,42 +120,43 @@ class JobManager:
             )
             report("Saving extracted transactions", 96)
             payload = result.to_json()
-            db.save_result(statement_id, payload)
+            db.save_result(document_id, job_id, payload)
             logger.info(
-                "Statement %s finished with status=%s transactions=%s",
-                statement_id,
+                "Document %s finished with status=%s transactions=%s (job %s)",
+                document_id,
                 result.status,
                 len(result.transactions),
+                job_id,
             )
         except ExtractionError as exc:
             message = str(exc)
-            logger.warning("Statement %s failed: %s", statement_id, message)
-            self._mark_failed(db, statement_id, message)
+            logger.warning("Document %s failed: %s", document_id, message)
+            self._mark_failed(db, job_id, message)
         except SupabaseError as exc:
             logger.exception(
-                "Statement %s database/storage failure (type=%s, status=%s)",
-                statement_id,
+                "Document %s database/storage failure (type=%s, status=%s)",
+                document_id,
                 type(exc).__name__,
                 getattr(exc, "status_code", None),
             )
             self._mark_failed(
                 db,
-                statement_id,
+                job_id,
                 "The document was processed, but its results could not be saved. Please retry.",
             )
         except Exception:
-            logger.exception("Unexpected processing failure for statement %s", statement_id)
+            logger.exception("Unexpected processing failure for document %s", document_id)
             self._mark_failed(
                 db,
-                statement_id,
+                job_id,
                 "Extraction failed unexpectedly. The document may use an unsupported layout. Please retry or enter the transactions manually.",
             )
 
-    def _mark_failed(self, db: SupabaseRest, statement_id: str, message: str) -> None:
+    def _mark_failed(self, db: SupabaseRest, job_id: str, message: str) -> None:
         try:
-            db.mark_failed(statement_id, message)
+            db.mark_failed(job_id, message)
         except Exception:
-            logger.exception("Could not record failure for statement %s", statement_id)
+            logger.exception("Could not record failure for job %s", job_id)
 
     def shutdown(self) -> None:
         self.executor.shutdown(wait=False, cancel_futures=True)

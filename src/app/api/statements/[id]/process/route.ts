@@ -21,69 +21,58 @@ export async function POST(_request: Request, { params }: RouteContext) {
   if (!id) return jsonError("Invalid statement id.");
 
   const { user, supabase } = context;
-  const { data: statement, error: loadError } = await supabase
-    .from("statements")
+  const { data: document, error: loadError } = await supabase
+    .from("uploaded_documents")
     .select("id,status")
     .eq("id", id)
     .eq("user_id", user.id)
     .maybeSingle();
 
   if (loadError) {
-    logServerError("Could not load statement for processing", loadError);
+    logServerError("Could not load document for processing", loadError);
     return jsonError("Could not start processing.", 500);
   }
-  if (!statement) return jsonError("Statement not found.", 404);
+  if (!document) return jsonError("Statement not found.", 404);
 
-  if (statement.status === "queued" || statement.status === "processing") {
+  if (document.status === "queued" || document.status === "processing") {
     return NextResponse.json(
-      { status: statement.status },
+      { status: document.status },
       { headers: { "Cache-Control": "no-store" } }
     );
   }
 
-  if (statement.status === "completed" || statement.status === "partial") {
+  if (document.status === "completed" || document.status === "partial") {
     return jsonError(
       "This statement has already been extracted. Upload a new copy to run extraction again.",
       409
     );
   }
 
-  // A failed extraction must not overwrite rows the user has entered manually.
-  const { count: existingRows, error: countError } = await supabase
-    .from("transactions")
-    .select("id", { count: "exact", head: true })
-    .eq("statement_id", id);
+  // queue_conversion is SECURITY DEFINER: it verifies ownership, refuses to
+  // overwrite saved rows or completed documents, and creates the next attempt.
+  const { data: job, error: queueError } = await supabase.rpc("queue_conversion", {
+    p_document_id: id,
+  });
 
-  if (countError) {
-    logServerError("Could not check existing transactions", countError);
-    return jsonError("Could not start processing.", 500);
-  }
-  if ((existingRows ?? 0) > 0) {
-    return jsonError(
-      "This statement already has saved rows. Retrying extraction would replace them, so upload a new copy instead.",
-      409
-    );
+  if (queueError || !job) {
+    const message = queueError?.message ?? "";
+    if (
+      message.includes("already been extracted") ||
+      message.includes("already has saved rows")
+    ) {
+      return jsonError(message, 409);
+    }
+    if (message.includes("Document not found")) {
+      return jsonError("Statement not found.", 404);
+    }
+    logServerError("Could not queue conversion", queueError);
+    return jsonError("Could not start processing. Please try again.", 500);
   }
 
   const processor = getProcessorEnv();
   if (!processor) {
-    await markFailed(
-      supabase,
-      id,
-      "The processing service is not configured. Please contact support."
-    );
+    await failConversion(supabase, job.id, NOT_CONFIGURED_MESSAGE);
     return jsonError(NOT_CONFIGURED_MESSAGE, 503);
-  }
-
-  const { error: queueError } = await supabase
-    .from("statements")
-    .update({ status: "queued", error_message: null })
-    .eq("id", id)
-    .eq("user_id", user.id);
-
-  if (queueError) {
-    logServerError("Could not queue statement", queueError);
-    return jsonError("Could not start processing. Please try again.", 500);
   }
 
   try {
@@ -93,49 +82,47 @@ export async function POST(_request: Request, { params }: RouteContext) {
         "Content-Type": "application/json",
         "x-processor-key": processor.apiKey,
       },
-      body: JSON.stringify({ statement_id: id, user_id: user.id }),
+      body: JSON.stringify({
+        document_id: id,
+        job_id: job.id,
+        user_id: user.id,
+      }),
       signal: AbortSignal.timeout(20_000),
       cache: "no-store",
     });
 
-    if (!response.ok) {
-      console.error(`Processor rejected statement ${id}: status ${response.status}`);
-      await markQueuedFailed(supabase, id, REJECTED_MESSAGE);
+    // 409 means the processor already has this document in flight. That is
+    // success from the browser's point of view.
+    if (!response.ok && response.status !== 409) {
+      console.error(`Processor rejected document ${id}: status ${response.status}`);
+      await failConversion(supabase, job.id, REJECTED_MESSAGE);
       return jsonError(REJECTED_MESSAGE, 502);
     }
 
     return NextResponse.json(
-      { status: "queued" },
+      { status: "queued", jobId: job.id },
       { status: 202, headers: { "Cache-Control": "no-store" } }
     );
   } catch (error) {
     logServerError("Could not contact processing service", error);
-    await markQueuedFailed(supabase, id, UNAVAILABLE_MESSAGE);
+    await failConversion(supabase, job.id, UNAVAILABLE_MESSAGE);
     return jsonError(UNAVAILABLE_MESSAGE, 502);
   }
 }
 
 type ApiSupabase = NonNullable<Awaited<ReturnType<typeof getApiContext>>>["supabase"];
 
-async function markQueuedFailed(supabase: ApiSupabase, id: string, message: string) {
-  const { error } = await supabase
-    .from("statements")
-    .update({ status: "failed", error_message: message, processed_at: new Date().toISOString() })
-    .eq("id", id)
-    .eq("status", "queued");
+async function failConversion(
+  supabase: ApiSupabase,
+  jobId: string,
+  message: string
+) {
+  const { error } = await supabase.rpc("fail_conversion", {
+    p_job_id: jobId,
+    p_message: message,
+  });
 
   if (error) {
-    logServerError("Could not record processing failure", error);
-  }
-}
-
-async function markFailed(supabase: ApiSupabase, id: string, message: string) {
-  const { error } = await supabase
-    .from("statements")
-    .update({ status: "failed", error_message: message, processed_at: new Date().toISOString() })
-    .eq("id", id);
-
-  if (error) {
-    logServerError("Could not record processing failure", error);
+    logServerError("Could not record conversion failure", error);
   }
 }

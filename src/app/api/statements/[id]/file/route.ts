@@ -15,7 +15,7 @@ export async function GET(_request: Request, { params }: RouteContext) {
 
   const { supabase } = context;
   const { data: statement, error } = await supabase
-    .from("statements")
+    .from("uploaded_documents")
     .select("file_name,storage_path")
     .eq("id", id)
     .maybeSingle();

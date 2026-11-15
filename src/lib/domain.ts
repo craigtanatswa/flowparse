@@ -1,8 +1,8 @@
 import type { Json, Tables } from "@/lib/database.types";
 import type { AppStatus } from "@/lib/constants";
 
-export type StatementRecord = Tables<"statements">;
-export type TransactionRecord = Tables<"transactions">;
+export type StatementRecord = Tables<"uploaded_documents">;
+export type TransactionRecord = Tables<"extracted_transactions">;
 
 export type ValidationTone =
   | "pass"

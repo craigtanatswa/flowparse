@@ -22,12 +22,21 @@ export function ProfileForm({ initialName }: { initialName: string }) {
     setSaving(true);
     try {
       const supabase = createClient();
-      const { error } = await supabase.auth.updateUser({
-        data: { full_name: name.trim() },
-      });
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
+      if (!user) {
+        toast.error("Your session has expired. Please sign in again.");
+        return;
+      }
+
+      const { error } = await supabase
+        .from("profiles")
+        .update({ display_name: name.trim() })
+        .eq("id", user.id);
+
       if (error) {
         toast.error(error.message || "Could not update your profile.");
-        setSaving(false);
         return;
       }
       toast.success("Profile updated");

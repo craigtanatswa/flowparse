@@ -20,13 +20,10 @@ import { ActiveRefresh } from "@/components/statements/active-refresh";
 import { StatementStatusBadge } from "@/components/statement-status-badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { loadAccountData } from "@/lib/account";
 import { requireUser } from "@/lib/auth";
 import { readStatus, type StatementRecord } from "@/lib/domain";
-import {
-  FREE_PLAN,
-  currentMonthStartIso,
-  nextAllowanceReset,
-} from "@/lib/plans";
+import { currentMonthStartIso, nextAllowanceReset } from "@/lib/plans";
 import {
   cn,
   formatDateTime,
@@ -123,6 +120,7 @@ export default async function DashboardPage() {
   const monthStart = currentMonthStartIso();
 
   const [
+    account,
     recentResult,
     statementCountResult,
     transactionCountResult,
@@ -130,27 +128,28 @@ export default async function DashboardPage() {
     failedCountResult,
     monthCountResult,
   ] = await Promise.all([
+    loadAccountData(supabase, user.id),
     supabase
-      .from("statements")
+      .from("uploaded_documents")
       .select("*")
       .order("created_at", { ascending: false })
       .limit(6),
     supabase
-      .from("statements")
+      .from("uploaded_documents")
       .select("id", { count: "exact", head: true }),
     supabase
-      .from("transactions")
+      .from("extracted_transactions")
       .select("id", { count: "exact", head: true }),
     supabase
-      .from("transactions")
+      .from("extracted_transactions")
       .select("id", { count: "exact", head: true })
       .eq("needs_review", true),
     supabase
-      .from("statements")
+      .from("uploaded_documents")
       .select("id", { count: "exact", head: true })
       .eq("status", "failed"),
     supabase
-      .from("statements")
+      .from("uploaded_documents")
       .select("id", { count: "exact", head: true })
       .gte("created_at", monthStart),
   ]);
@@ -173,12 +172,18 @@ export default async function DashboardPage() {
   const transactionCount = transactionCountResult.count ?? 0;
   const reviewCount = reviewCountResult.count ?? 0;
   const failedCount = failedCountResult.count ?? 0;
-  const monthStatements = monthCountResult.count ?? 0;
+  const { plan, usage } = account;
+  const monthStatements = account.usageAvailable
+    ? usage.documents_uploaded
+    : monthCountResult.count ?? 0;
   const usagePercent = Math.min(
     100,
-    Math.round((monthStatements / FREE_PLAN.statementLimit) * 100)
+    Math.round((monthStatements / plan.statementLimit) * 100)
   );
-  const accountName = user.email?.split("@")[0]?.replace(/[._-]+/g, " ") || "there";
+  const accountName =
+    account.profile?.display_name?.trim() ||
+    user.email?.split("@")[0]?.replace(/[._-]+/g, " ") ||
+    "there";
   const hasActive = recent.some(
     (statement) =>
       statement.status === "queued" || statement.status === "processing"
@@ -295,7 +300,7 @@ export default async function DashboardPage() {
                       Plan usage
                     </p>
                     <p className="text-[13px] font-semibold text-foreground">
-                      {FREE_PLAN.name} plan
+                      {plan.name} plan
                     </p>
                   </div>
                 </div>
@@ -308,7 +313,7 @@ export default async function DashboardPage() {
                 <p className="text-[13px] font-medium text-foreground">
                   {monthStatements}
                   <span className="ml-1 text-[11.5px] font-normal text-muted-foreground">
-                    of {FREE_PLAN.statementLimit} statements this month
+                    of {plan.statementLimit} statements this month
                   </span>
                 </p>
                 <span className="text-[11px] tabular-nums text-muted-foreground">
@@ -321,7 +326,7 @@ export default async function DashboardPage() {
                 role="progressbar"
                 aria-valuenow={monthStatements}
                 aria-valuemin={0}
-                aria-valuemax={FREE_PLAN.statementLimit}
+                aria-valuemax={plan.statementLimit}
                 aria-label="Monthly statement allowance used"
               >
                 <div

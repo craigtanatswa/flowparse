@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
 from urllib.parse import quote
@@ -18,11 +19,15 @@ class SupabaseError(RuntimeError):
         self.status_code = status_code
 
 
-class StatementNotFound(SupabaseError):
+class JobNotFound(SupabaseError):
     pass
 
 
-class StatementConflict(SupabaseError):
+class DocumentNotFound(SupabaseError):
+    pass
+
+
+class ConversionConflict(SupabaseError):
     pass
 
 
@@ -50,51 +55,98 @@ class SupabaseRest:
     def _client(self) -> httpx.Client:
         return httpx.Client(timeout=httpx.Timeout(60.0, connect=10.0))
 
-    def get_statement(self, statement_id: str) -> dict[str, Any]:
+    def get_job(self, job_id: str) -> dict[str, Any]:
         with self._client() as client:
             response = client.get(
-                f"{_base(self.settings)}/rest/v1/statements",
+                f"{_base(self.settings)}/rest/v1/conversion_jobs",
                 params={
-                    "id": f"eq.{statement_id}",
-                    "select": "id,user_id,file_name,storage_path,file_size,status,processed_at,updated_at",
+                    "id": f"eq.{job_id}",
+                    "select": "id,document_id,user_id,attempt,status",
                 },
                 headers=_headers(self.settings),
             )
         if response.status_code >= 400:
             raise SupabaseError(
-                f"Could not read statement (status {response.status_code}).",
+                f"Could not read conversion job (status {response.status_code}).",
                 status_code=response.status_code,
             )
         rows = response.json()
         if not rows:
-            raise StatementNotFound("Statement not found.")
+            raise JobNotFound("Conversion not found.")
         return rows[0]
 
-    def claim_statement(self, statement_id: str) -> None:
-        """Move an uploaded/failed/queued statement into processing exactly once."""
+    def get_document(self, document_id: str) -> dict[str, Any]:
+        with self._client() as client:
+            response = client.get(
+                f"{_base(self.settings)}/rest/v1/uploaded_documents",
+                params={
+                    "id": f"eq.{document_id}",
+                    "select": "id,user_id,file_name,storage_path,file_size,status",
+                },
+                headers=_headers(self.settings),
+            )
+        if response.status_code >= 400:
+            raise SupabaseError(
+                f"Could not read document (status {response.status_code}).",
+                status_code=response.status_code,
+            )
+        rows = response.json()
+        if not rows:
+            raise DocumentNotFound("Document not found.")
+        return rows[0]
+
+    def claim_job(self, job_id: str, document_id: str) -> None:
+        """Move one queued job into processing exactly once."""
         with self._client() as client:
             response = client.patch(
-                f"{_base(self.settings)}/rest/v1/statements",
+                f"{_base(self.settings)}/rest/v1/conversion_jobs",
                 params={
-                    "id": f"eq.{statement_id}",
-                    "status": "in.(uploaded,queued,failed)",
+                    "id": f"eq.{job_id}",
+                    "document_id": f"eq.{document_id}",
+                    "status": "eq.queued",
                 },
                 json={"status": "processing", "error_message": None},
                 headers=_headers(self.settings, representation=True),
             )
         if response.status_code >= 400:
             raise SupabaseError(
-                f"Could not claim statement (status {response.status_code}).",
+                f"Could not claim conversion (status {response.status_code}).",
                 status_code=response.status_code,
             )
         if not response.json():
-            raise StatementConflict("This statement is already being processed or has already been extracted.")
+            raise ConversionConflict(
+                "This conversion is already being processed or has already been extracted."
+            )
 
-    def download_statement(self, statement: dict[str, Any]) -> bytes:
-        path = quote(str(statement["storage_path"]), safe="/")
-        url = f"{_base(self.settings)}/storage/v1/object/{self.settings.supabase_statements_bucket}/{path}"
+        # Keep the denormalised document state in step with the job so the
+        # existing dashboard/status UI continues to work.
         with self._client() as client:
-            response = client.get(url, headers=_headers(self.settings))
+            document_response = client.patch(
+                f"{_base(self.settings)}/rest/v1/uploaded_documents",
+                params={
+                    "id": f"eq.{document_id}",
+                    "status": "in.(uploaded,queued,failed)",
+                },
+                json={"status": "processing", "error_message": None},
+                headers=_headers(self.settings),
+            )
+        if document_response.status_code >= 400:
+            raise SupabaseError(
+                "Could not mark the document as processing "
+                f"(status {document_response.status_code}).",
+                status_code=document_response.status_code,
+            )
+
+    def download_document(self, document: dict[str, Any]) -> bytes:
+        path = quote(str(document["storage_path"]), safe="/")
+        url = f"{_base(self.settings)}/storage/v1/object/{self.settings.supabase_statements_bucket}/{path}"
+        # Hosted Supabase Storage sits behind a CDN that ignores conditional
+        # request headers (Cache-Control/Pragma) and keys its cache on the full
+        # URL. A repaired/replaced source object can otherwise be served from
+        # cache for up to an hour, so always download through a unique URL.
+        params = {"v": uuid.uuid4().hex}
+        with self._client() as client:
+            response = client.get(url, params=params, headers=_headers(self.settings))
         if response.status_code == 404:
             raise SupabaseError("The uploaded PDF could not be found in storage.")
         if response.status_code >= 400:
@@ -108,37 +160,33 @@ class SupabaseRest:
             )
         return response.content
 
-    def save_result(self, statement_id: str, payload: dict[str, Any]) -> None:
+    def save_result(
+        self, document_id: str, job_id: str, payload: dict[str, Any]
+    ) -> None:
         self._rpc(
             "save_extraction_result",
-            {"p_statement_id": statement_id, "p_payload": payload},
+            {
+                "p_document_id": document_id,
+                "p_job_id": job_id,
+                "p_payload": payload,
+            },
         )
 
-    def update_progress(self, statement_id: str, stage: str, percent: int) -> None:
-        """Record a real pipeline stage. Safe to call after a statement is gone."""
-        with self._client() as client:
-            response = client.patch(
-                f"{_base(self.settings)}/rest/v1/statements",
-                params={
-                    "id": f"eq.{statement_id}",
-                    "status": "in.(queued,processing)",
-                },
-                json={
-                    "processing_stage": stage[:160],
-                    "progress_percent": max(0, min(100, int(percent))),
-                },
-                headers=_headers(self.settings),
-            )
-        if response.status_code >= 400:
-            raise SupabaseError(
-                f"Could not update processing progress (status {response.status_code}).",
-                status_code=response.status_code,
-            )
-
-    def mark_failed(self, statement_id: str, message: str) -> None:
+    def update_progress(self, job_id: str, stage: str, percent: int) -> None:
+        """Record a real pipeline stage. Safe to call after a job is gone."""
         self._rpc(
-            "mark_statement_failed",
-            {"p_statement_id": statement_id, "p_message": message[:2000]},
+            "update_conversion_progress",
+            {
+                "p_job_id": job_id,
+                "p_stage": stage[:160],
+                "p_percent": max(0, min(100, int(percent))),
+            },
+        )
+
+    def mark_failed(self, job_id: str, message: str) -> None:
+        self._rpc(
+            "mark_conversion_failed",
+            {"p_job_id": job_id, "p_message": message[:2000]},
         )
 
     def _rpc(self, function: str, payload: dict[str, Any]) -> Any:
@@ -167,7 +215,7 @@ class SupabaseRest:
         cutoff_iso = cutoff.isoformat()
         with self._client() as client:
             response = client.get(
-                f"{_base(self.settings)}/rest/v1/statements",
+                f"{_base(self.settings)}/rest/v1/conversion_jobs",
                 params={
                     "status": "in.(processing,queued)",
                     "updated_at": f"lt.{cutoff_iso}",
@@ -187,5 +235,5 @@ class SupabaseRest:
                 )
                 recovered += 1
             except SupabaseError:
-                logger.exception("Failed to recover stale statement %s", row.get("id"))
+                logger.exception("Failed to recover stale job %s", row.get("id"))
         return recovered

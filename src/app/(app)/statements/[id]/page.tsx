@@ -18,15 +18,15 @@ export default async function StatementDetailPage({
   const [{ data: statement, error: statementError }, { data: transactions, error: transactionsError }] =
     await Promise.all([
       supabase
-        .from("statements")
+        .from("uploaded_documents")
         .select("*")
         .eq("id", id)
         .eq("user_id", user.id)
         .maybeSingle(),
       supabase
-        .from("transactions")
+        .from("extracted_transactions")
         .select("*")
-        .eq("statement_id", id)
+        .eq("document_id", id)
         .order("sort_index", { ascending: true })
         .order("created_at", { ascending: true }),
     ]);

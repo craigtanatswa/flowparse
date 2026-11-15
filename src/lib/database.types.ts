@@ -1,4 +1,4 @@
-﻿export type Json =
+export type Json =
   | string
   | number
   | boolean
@@ -34,7 +34,233 @@ export type Database = {
   }
   public: {
     Tables: {
-      statements: {
+      conversion_jobs: {
+        Row: {
+          attempt: number
+          created_at: string
+          document_id: string
+          error_message: string | null
+          finished_at: string | null
+          id: string
+          processing_stage: string | null
+          progress_percent: number | null
+          started_at: string | null
+          status: string
+          updated_at: string
+          user_id: string
+        }
+        Insert: {
+          attempt?: number
+          created_at?: string
+          document_id: string
+          error_message?: string | null
+          finished_at?: string | null
+          id?: string
+          processing_stage?: string | null
+          progress_percent?: number | null
+          started_at?: string | null
+          status?: string
+          updated_at?: string
+          user_id: string
+        }
+        Update: {
+          attempt?: number
+          created_at?: string
+          document_id?: string
+          error_message?: string | null
+          finished_at?: string | null
+          id?: string
+          processing_stage?: string | null
+          progress_percent?: number | null
+          started_at?: string | null
+          status?: string
+          updated_at?: string
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "conversion_jobs_document_id_fkey"
+            columns: ["document_id"]
+            isOneToOne: false
+            referencedRelation: "uploaded_documents"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      extracted_transactions: {
+        Row: {
+          balance: number | null
+          created_at: string
+          credit: number | null
+          currency: string | null
+          debit: number | null
+          description: string
+          document_id: string
+          edited: boolean
+          id: string
+          job_id: string | null
+          needs_review: boolean
+          page_number: number | null
+          raw_text: string | null
+          reference: string | null
+          review_reasons: Json
+          sort_index: number
+          source: string
+          txn_date: string | null
+          updated_at: string
+          user_id: string
+          value_date: string | null
+        }
+        Insert: {
+          balance?: number | null
+          created_at?: string
+          credit?: number | null
+          currency?: string | null
+          debit?: number | null
+          description?: string
+          document_id: string
+          edited?: boolean
+          id?: string
+          job_id?: string | null
+          needs_review?: boolean
+          page_number?: number | null
+          raw_text?: string | null
+          reference?: string | null
+          review_reasons?: Json
+          sort_index?: number
+          source?: string
+          txn_date?: string | null
+          updated_at?: string
+          user_id: string
+          value_date?: string | null
+        }
+        Update: {
+          balance?: number | null
+          created_at?: string
+          credit?: number | null
+          currency?: string | null
+          debit?: number | null
+          description?: string
+          document_id?: string
+          edited?: boolean
+          id?: string
+          job_id?: string | null
+          needs_review?: boolean
+          page_number?: number | null
+          raw_text?: string | null
+          reference?: string | null
+          review_reasons?: Json
+          sort_index?: number
+          source?: string
+          txn_date?: string | null
+          updated_at?: string
+          user_id?: string
+          value_date?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "extracted_transactions_job_id_fkey"
+            columns: ["job_id"]
+            isOneToOne: false
+            referencedRelation: "conversion_jobs"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "transactions_statement_id_fkey"
+            columns: ["document_id"]
+            isOneToOne: false
+            referencedRelation: "uploaded_documents"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      profiles: {
+        Row: {
+          company: string | null
+          created_at: string
+          display_name: string
+          email: string | null
+          id: string
+          plan_id: string
+          updated_at: string
+        }
+        Insert: {
+          company?: string | null
+          created_at?: string
+          display_name?: string
+          email?: string | null
+          id: string
+          plan_id?: string
+          updated_at?: string
+        }
+        Update: {
+          company?: string | null
+          created_at?: string
+          display_name?: string
+          email?: string | null
+          id?: string
+          plan_id?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "profiles_plan_id_fkey"
+            columns: ["plan_id"]
+            isOneToOne: false
+            referencedRelation: "subscription_plans"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      subscription_plans: {
+        Row: {
+          batch_limit: number
+          cadence: string
+          created_at: string
+          description: string
+          features: Json
+          file_size_mb: number
+          id: string
+          is_active: boolean
+          name: string
+          price_display: string
+          sort_order: number
+          statement_limit: number
+          updated_at: string
+        }
+        Insert: {
+          batch_limit: number
+          cadence?: string
+          created_at?: string
+          description?: string
+          features?: Json
+          file_size_mb: number
+          id: string
+          is_active?: boolean
+          name: string
+          price_display?: string
+          sort_order?: number
+          statement_limit: number
+          updated_at?: string
+        }
+        Update: {
+          batch_limit?: number
+          cadence?: string
+          created_at?: string
+          description?: string
+          features?: Json
+          file_size_mb?: number
+          id?: string
+          is_active?: boolean
+          name?: string
+          price_display?: string
+          sort_order?: number
+          statement_limit?: number
+          updated_at?: string
+        }
+        Relationships: []
+      }
+      uploaded_documents: {
         Row: {
           account_holder: string | null
           account_number_last4: string | null
@@ -121,82 +347,41 @@ export type Database = {
         }
         Relationships: []
       }
-      transactions: {
+      usage_records: {
         Row: {
-          balance: number | null
+          conversions_completed: number
+          conversions_failed: number
           created_at: string
-          credit: number | null
-          currency: string | null
-          debit: number | null
-          description: string
-          edited: boolean
+          documents_uploaded: number
           id: string
-          needs_review: boolean
-          page_number: number | null
-          raw_text: string | null
-          reference: string | null
-          review_reasons: Json
-          sort_index: number
-          source: string
-          statement_id: string
-          txn_date: string | null
+          period_start: string
+          storage_bytes: number
           updated_at: string
           user_id: string
-          value_date: string | null
         }
         Insert: {
-          balance?: number | null
+          conversions_completed?: number
+          conversions_failed?: number
           created_at?: string
-          credit?: number | null
-          currency?: string | null
-          debit?: number | null
-          description?: string
-          edited?: boolean
+          documents_uploaded?: number
           id?: string
-          needs_review?: boolean
-          page_number?: number | null
-          raw_text?: string | null
-          reference?: string | null
-          review_reasons?: Json
-          sort_index?: number
-          source?: string
-          statement_id: string
-          txn_date?: string | null
+          period_start: string
+          storage_bytes?: number
           updated_at?: string
           user_id: string
-          value_date?: string | null
         }
         Update: {
-          balance?: number | null
+          conversions_completed?: number
+          conversions_failed?: number
           created_at?: string
-          credit?: number | null
-          currency?: string | null
-          debit?: number | null
-          description?: string
-          edited?: boolean
+          documents_uploaded?: number
           id?: string
-          needs_review?: boolean
-          page_number?: number | null
-          raw_text?: string | null
-          reference?: string | null
-          review_reasons?: Json
-          sort_index?: number
-          source?: string
-          statement_id?: string
-          txn_date?: string | null
+          period_start?: string
+          storage_bytes?: number
           updated_at?: string
           user_id?: string
-          value_date?: string | null
         }
-        Relationships: [
-          {
-            foreignKeyName: "transactions_statement_id_fkey"
-            columns: ["statement_id"]
-            isOneToOne: false
-            referencedRelation: "statements"
-            referencedColumns: ["id"]
-          },
-        ]
+        Relationships: []
       }
     }
     Views: {
@@ -204,7 +389,7 @@ export type Database = {
     }
     Functions: {
       apply_transaction_changes: {
-        Args: { p_deletes?: string[]; p_statement_id: string; p_upserts: Json }
+        Args: { p_deletes?: string[]; p_document_id: string; p_upserts: Json }
         Returns: {
           balance: number | null
           created_at: string
@@ -212,8 +397,10 @@ export type Database = {
           currency: string | null
           debit: number | null
           description: string
+          document_id: string
           edited: boolean
           id: string
+          job_id: string | null
           needs_review: boolean
           page_number: number | null
           raw_text: string | null
@@ -221,23 +408,55 @@ export type Database = {
           review_reasons: Json
           sort_index: number
           source: string
-          statement_id: string
           txn_date: string | null
           updated_at: string
           user_id: string
           value_date: string | null
         }[]
+        SetofOptions: {
+          from: "*"
+          to: "extracted_transactions"
+          isOneToOne: false
+          isSetofReturn: true
+        }
       }
-      mark_statement_failed: {
-        Args: { p_message: string; p_statement_id: string }
+      fail_conversion: {
+        Args: { p_job_id: string; p_message: string }
         Returns: undefined
+      }
+      mark_conversion_failed: {
+        Args: { p_job_id: string; p_message: string }
+        Returns: undefined
+      }
+      queue_conversion: {
+        Args: { p_document_id: string }
+        Returns: {
+          attempt: number
+          created_at: string
+          document_id: string
+          error_message: string | null
+          finished_at: string | null
+          id: string
+          processing_stage: string | null
+          progress_percent: number | null
+          started_at: string | null
+          status: string
+          updated_at: string
+          user_id: string
+        }
+        SetofOptions: {
+          from: "*"
+          to: "conversion_jobs"
+          isOneToOne: true
+          isSetofReturn: false
+        }
       }
       save_extraction_result: {
-        Args: { p_payload: Json; p_statement_id: string }
+        Args: { p_document_id: string; p_job_id: string; p_payload: Json }
         Returns: undefined
       }
-      update_statement_progress: {
-        Args: { p_percent: number; p_stage: string; p_statement_id: string }
+      update_conversion_progress: {
+        Args: { p_job_id: string; p_percent: number; p_stage: string }
         Returns: undefined
       }
     }

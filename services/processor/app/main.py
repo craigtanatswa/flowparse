@@ -12,8 +12,9 @@ from .config import Settings
 from .extract.ocr import check_tesseract_available
 from .jobs import JobManager
 from .supabase_rest import (
-    StatementConflict,
-    StatementNotFound,
+    ConversionConflict,
+    DocumentNotFound,
+    JobNotFound,
     SupabaseError,
     SupabaseRest,
 )
@@ -29,7 +30,8 @@ manager = JobManager(settings)
 
 
 class JobRequest(BaseModel):
-    statement_id: str = Field(min_length=36, max_length=36)
+    document_id: str = Field(min_length=36, max_length=36)
+    job_id: str = Field(min_length=36, max_length=36)
     user_id: str = Field(min_length=36, max_length=36)
 
 
@@ -115,15 +117,21 @@ async def create_job(request: JobRequest) -> dict[str, str]:
             detail="The processing service is not configured.",
         )
     try:
-        await run_in_threadpool(manager.submit, request.statement_id, request.user_id)
-    except StatementNotFound:
+        await run_in_threadpool(
+            manager.submit, request.document_id, request.job_id, request.user_id
+        )
+    except (DocumentNotFound, JobNotFound):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Statement not found.")
-    except StatementConflict as exc:
+    except ConversionConflict as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc))
     except SupabaseError:
-        logger.exception("Could not queue statement %s", request.statement_id)
+        logger.exception("Could not queue document %s", request.document_id)
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail="The processing service could not queue this statement. Please retry.",
         )
-    return {"status": "accepted", "statement_id": request.statement_id}
+    return {
+        "status": "accepted",
+        "document_id": request.document_id,
+        "job_id": request.job_id,
+    }
