@@ -737,10 +737,13 @@ Configure these environment variables for the project:
 - `DODO_PRODUCT_PRO_TEST` / `DODO_PRODUCT_PRO_LIVE`
 - `DODO_PRODUCT_BUSINESS_TEST` / `DODO_PRODUCT_BUSINESS_LIVE`
 
-`PROCESSOR_API_KEY` must be identical for the app and processor. Each service
-owns its build: Vercel builds the Next.js app with `npm run build`, and builds
-the processor and worker from the same Dockerfile. The export route requires the
-Node.js runtime and keeps `exceljs` external; this is configured in
+`PROCESSOR_API_KEY` must be identical for the app and processor. Set the shared
+values for Production, Preview, and Development. `NEXT_PUBLIC_*` values are
+inlined at build time, so changing them requires a new deployment.
+
+Each service owns its build: Vercel builds the Next.js app with `npm run build`,
+and builds the processor and worker from the same Dockerfile. The export route
+requires the Node.js runtime and keeps `exceljs` external; this is configured in
 `next.config.ts`.
 
 To test the full Vercel service wiring, run `vercel dev` (Docker is required for
@@ -815,6 +818,13 @@ service credential, not a user credential.
 7. Check `processor-worker` logs for claimed jobs and completed or failed extractions.
 8. Confirm the processor service has no public URL and that `/api/statements/:id/process` works through the binding.
 9. Check logs for failed extraction, billing webhook signature failures, or processor credential errors.
+
+### 6. Vercel build troubleshooting
+
+- **`Supabase is not configured. Set NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY` during the build.** Add both variables to the Vercel project for Production, Preview, and Development, then redeploy. They are inlined into the client bundle at build time. The authenticated route group is explicitly dynamic, so it is not prerendered, but the app still needs these values at runtime.
+- **`Edge Runtime is not supported in services`.** Next.js middleware defaults to Edge, which Vercel Services cannot deploy. `src/middleware.ts` sets `runtime: "nodejs"` in its `config` export; keep that setting if you edit the matcher.
+- **`PROCESSOR_URL` should not be set manually.** The `app` service binding injects it. Remove any manually configured value.
+- **The processor container is unreachable.** Confirm `PORT=8000` is set for the project and that the processor service is internal rather than expected at a public URL.
 
 ---
 
