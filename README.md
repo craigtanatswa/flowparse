@@ -530,14 +530,14 @@ FlowParse uses [Dodo Payments](https://dodopayments.com) as the Merchant of Reco
 
 The products are recurring monthly subscriptions in the SaaS tax category:
 
-| Plan | Price | Product id (test mode) |
-| --- | --- | --- |
-| FlowParse Free | $0 / month | `pdt_0Ns4djtqw9iALZUOZ0w2k` |
-| FlowParse Starter | $9 / month | `pdt_0Ns4djxmyAn482qBO58xA` |
-| FlowParse Pro | $19 / month | `pdt_0Ns4dk6Po7usYQPic6suw` |
-| FlowParse Business | $39 / month | `pdt_0Ns4dkALqGAkoaDG4Rr5d` |
+| Plan | Price | Test product id | Live product id |
+| --- | --- | --- | --- |
+| FlowParse Free | $0 / month | `pdt_0Ns4djtqw9iALZUOZ0w2k` | `pdt_0Ns9z3yEsSqRX1OineSy0` |
+| FlowParse Starter | $9 / month | `pdt_0Ns4djxmyAn482qBO58xA` | `pdt_0Ns9z45UMsX5TifM1LCse` |
+| FlowParse Pro | $19 / month | `pdt_0Ns4dk6Po7usYQPic6suw` | `pdt_0Ns9z4AZO9D22qBezwbzJ` |
+| FlowParse Business | $39 / month | `pdt_0Ns4dkALqGAkoaDG4Rr5d` | `pdt_0Ns9z4HcpH5OFIfXTLCT3` |
 
-These ids belong to the FlowParse test-mode business. Live products must be created separately and stored in the `_LIVE` variables; the test ids above must never be used with live credentials. The Free product exists for completeness and is not sold: the Free plan is the default entitlement when no paid subscription is active.
+The test ids belong to the FlowParse test-mode business and the live ids to its live business. They are not interchangeable: every request uses the ids whose suffix matches `DODO_PAYMENTS_ENVIRONMENT`. The Free product exists for completeness and is not sold: the Free plan is the default entitlement when no paid subscription is active.
 
 **Checkout.** The plan cards in Settings (and the pricing section) call `POST /api/billing/checkout` with a plan slug. The server validates the session, refuses to start a second subscription when one already grants access, resolves the product id from the environment for the current mode, creates or reuses the account's Dodo customer, and returns a hosted checkout URL. `/checkout/success` shows a confirming state until the webhook updates the account; it never activates a plan itself. `/settings?checkout=cancelled` explains that no charge was made.
 
@@ -563,6 +563,15 @@ Because the webhook is idempotent, a retried delivery cannot apply a plan twice 
 **Customer portal.** `POST /api/billing/portal` creates a short-lived hosted session for the linked Dodo customer. "Manage subscription" opens it for invoices, payment-method updates, plan changes, and cancellation. A scheduled cancellation keeps access until the end of the paid period; Dodo sends `subscription.cancelled` once the period actually ends.
 
 **Test mode.** `DODO_PAYMENTS_ENVIRONMENT` defaults to `test_mode`, and any value other than `live_mode` keeps test mode. The Dodo client is constructed with the matching environment, and product ids are resolved from the matching `_TEST`/`_LIVE` variables, so test and live configuration cannot be mixed by accident. Use Dodo's test cards (`4242 4242 4242 4242` for success, `4000 0000 0000 0341` for a decline) and the webhook relay shown above to exercise the lifecycle locally.
+
+**Live mode.** The four live products in the table above already exist in the live business. Switching to live is a configuration change, not a code change:
+
+1. Deploy the app to a public HTTPS host, because Dodo cannot deliver live webhooks to `localhost`.
+2. In Dodo live mode, register `https://<your-host>/api/webhooks/dodo` for the subscription events and copy its signing secret.
+3. Set `DODO_PAYMENTS_ENVIRONMENT=live_mode`, the live API key, the live webhook secret, and the four `_LIVE` product ids in the host's secret store. Keep the test values for development and preview environments.
+4. Confirm the deployment reports a live-mode Dodo client, that the four `_LIVE` ids resolve, and that an unsigned webhook is rejected with `401`.
+
+Never put live credentials in a committed file or a client bundle, and never reuse test product ids with live credentials. A live checkout charges a real card, so it is a customer action; validate the flow with a real low-value purchase only when you are ready to take payments.
 
 ---
 
@@ -694,7 +703,7 @@ Build with `npm run build` and start with `npm start`. The export route requires
 2. Copy the product ids into `DODO_PRODUCT_*_TEST`, and set `DODO_PAYMENTS_ENVIRONMENT=test_mode`.
 3. Add a webhook endpoint in Dodo pointing to `https://your-app.example.com/api/webhooks/dodo`, subscribe it to the subscription events, and copy the signing secret into `DODO_PAYMENTS_WEBHOOK_KEY`.
 4. Complete a test-mode checkout end-to-end, including the webhook relay or a public tunnel, before enabling live mode.
-5. For production, create separate live products, set the `_LIVE` ids, switch `DODO_PAYMENTS_ENVIRONMENT=live_mode`, and use the live API key and live webhook secret.
+5. For production, use the FlowParse live products listed in [Billing](#billing-dodo-payments) (they already exist), set the `_LIVE` ids, switch `DODO_PAYMENTS_ENVIRONMENT=live_mode`, register the live webhook endpoint, and use the live API key and live webhook secret.
 
 Keep the test and live values in different environments. Do not reuse test product ids with live credentials, and do not enable live mode until the checkout, webhook, renewal, cancellation, and portal flows have been verified in test mode.
 
