@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field
 
 from .config import Settings
 from .extract.ocr import check_tesseract_available
-from .jobs import JobManager
+from .jobs import JobManager, validate_job
 from .supabase_rest import (
     ConversionConflict,
     DocumentNotFound,
@@ -61,16 +61,19 @@ def _ocr_available() -> bool:
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     logger.info(
-        "FlowParse processor starting (workers=%s, ocr_enabled=%s)",
+        "FlowParse processor starting (mode=%s, workers=%s, ocr_enabled=%s)",
+        settings.processing_mode,
         settings.processor_workers,
         settings.ocr_enabled,
     )
     if not settings.supabase_service_role_key or not settings.processor_api_key:
         logger.warning("Processor credentials are incomplete; jobs will be rejected.")
-    if settings.ocr_enabled and not _ocr_available():
+    if settings.processing_mode == "queued":
+        logger.info("Queued mode: the processor-worker daemon claims and runs jobs.")
+    elif settings.ocr_enabled and not _ocr_available():
         logger.warning("OCR is enabled but Tesseract is not available on this server.")
 
-    if settings.supabase_service_role_key:
+    if settings.processing_mode == "embedded" and settings.supabase_service_role_key:
         try:
             recovered = await run_in_threadpool(
                 lambda: SupabaseRest(settings).claim_stale_jobs(settings.stale_job_minutes)
@@ -117,9 +120,19 @@ async def create_job(request: JobRequest) -> dict[str, str]:
             detail="The processing service is not configured.",
         )
     try:
-        await run_in_threadpool(
-            manager.submit, request.document_id, request.job_id, request.user_id
-        )
+        if settings.processing_mode == "queued":
+            # The worker daemon owns claiming and execution in production.
+            await run_in_threadpool(
+                validate_job,
+                SupabaseRest(settings),
+                request.document_id,
+                request.job_id,
+                request.user_id,
+            )
+        else:
+            await run_in_threadpool(
+                manager.submit, request.document_id, request.job_id, request.user_id
+            )
     except (DocumentNotFound, JobNotFound):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Statement not found.")
     except ConversionConflict as exc:

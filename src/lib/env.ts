@@ -10,6 +10,9 @@ export function getPublicSupabaseEnv(): { url: string; anonKey: string } {
 }
 
 export function getProcessorEnv(): { url: string; apiKey: string } | null {
+  // On Vercel, PROCESSOR_URL is injected at runtime by the `app` service's
+  // binding to the internal `processor` service (see vercel.json). Locally,
+  // set it to the processor's base URL, e.g. http://127.0.0.1:8000.
   const url = process.env.PROCESSOR_URL;
   const apiKey = process.env.PROCESSOR_API_KEY;
   if (!url || !apiKey) return null;

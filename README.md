@@ -70,7 +70,7 @@ Supabase Postgres (RLS) ◄──── Supabase Auth
 11. The workspace polls the authenticated API until processing finishes, shows the live stage and percentage, then shows the editable ledger, reconciliation panel, and extraction report. Failed batch items keep an inline retry action, and active list pages refresh themselves.
 12. Excel and CSV exports are generated on the server after an ownership check. PDF access is also authenticated and ownership-scoped.
 
-The processor is an independent long-running service. Next.js only submits jobs; it does not download or parse PDFs itself. This keeps OCR memory and CPU usage off the web tier.
+The processor is an independent internal service. Next.js only submits jobs; it does not download or parse PDFs itself. This keeps OCR memory and CPU usage off the web tier. On Vercel, the app reaches the processor through the `PROCESSOR_URL` service binding declared in `vercel.json`, and a `processor-worker` daemon claims queued jobs and runs extraction continuously.
 
 ### Billing flow
 
@@ -195,7 +195,8 @@ supabase/
   migrations/                    Schema, RLS, storage, triggers, and RPCs
 services/processor/
   app/main.py                    FastAPI health and job endpoints
-  app/jobs.py                    Job manager and extraction execution
+  app/jobs.py                    Job validation, manager, and extraction execution
+  app/worker.py                  Queue-polling worker used by the Vercel daemon
   app/supabase_rest.py           Service-role REST client and stale-job recovery
   app/extract/
     pipeline.py                  Public extract_pdf() entry point
@@ -213,6 +214,9 @@ services/processor/
     test_amounts.py              Amount/currency unit tests
     test_dates.py                Date parsing unit tests
     test_validation.py           Reconciliation and duplicate tests
+    test_worker.py               Worker polling and processing-mode tests
+    test_main.py                 API queued/embedded dispatch tests
+    test_supabase_rest.py        Queue claiming and race tests
 docs/
   adding-a-bank.md               Step-by-step bank profile guide
 ```
@@ -392,7 +396,7 @@ python -m app.cli path/to/statement.pdf
 | `NEXT_PUBLIC_SUPABASE_URL` | Yes | Supabase project URL |
 | `NEXT_PUBLIC_SUPABASE_ANON_KEY` | Yes | Public anon key; protected by RLS |
 | `SUPABASE_SERVICE_ROLE_KEY` | Yes for billing | Server-only client used for customer linking and the webhook RPC; bypasses RLS, so never expose it |
-| `PROCESSOR_URL` | Yes for extraction | Base URL of the Python service |
+| `PROCESSOR_URL` | Yes for extraction | Base URL of the Python service. On Vercel this is injected by the `app` -> `processor` service binding; set it manually only for local development |
 | `PROCESSOR_API_KEY` | Yes for extraction | Shared secret sent as `X-Processor-Key` |
 | `NEXT_PUBLIC_SITE_URL` | Recommended | Canonical URL used in auth email redirects and checkout return URLs |
 | `DODO_PAYMENTS_ENVIRONMENT` | No | `test_mode` (default) or `live_mode`; any other value falls back to test mode |
@@ -417,14 +421,17 @@ If the processor variables are missing, uploads still succeed but processing is 
 | `SUPABASE_SERVICE_ROLE_KEY` | empty | Server-side database and storage access |
 | `SUPABASE_STATEMENTS_BUCKET` | `statements` | Private PDF bucket |
 | `PROCESSOR_API_KEY` | empty | Shared secret with the web app |
-| `PROCESSOR_WORKERS` | `2` | Concurrent extraction threads |
+| `PORT` | `8000` | Container listener; set this in the Vercel project environment |
+| `PROCESSOR_WORKERS` | `2` | Concurrent extraction threads in embedded mode |
+| `PROCESSING_MODE` | `queued` in production; `embedded` otherwise | `embedded` runs jobs in the FastAPI process; `queued` leaves them for `processor-worker` |
+| `WORKER_POLL_SECONDS` | `2` | Delay between empty queue polls in the worker |
 | `MAX_PAGES` | `100` | Page cap per PDF |
 | `MAX_FILE_MB` | `25` | Processing file-size cap |
 | `OCR_ENABLED` | `true` | Enable scanned-page OCR |
 | `TESSERACT_CMD` | empty | Explicit Tesseract path; empty means PATH or platform default |
 | `OCR_DPI` | `300` | OCR render resolution |
 | `TESSERACT_LANG` | `eng` | OCR language |
-| `STALE_JOB_MINUTES` | `20` | Age after which interrupted jobs are marked failed at startup |
+| `STALE_JOB_MINUTES` | `20` | Age after which processing jobs are marked failed at startup |
 
 **Never prefix the service-role key with `NEXT_PUBLIC_`.** It must only exist in the processor runtime.
 
@@ -590,9 +597,10 @@ cd services/processor
 python -m pytest -q
 ```
 
-The processor suite currently contains 33 tests covering:
+The processor suite currently contains 47 tests covering:
 
 - digital, US, European, value-date/reference, inline value-date, year-end yearless dates, headerless, duplicate, unsupported, and scanned layouts;
+- queue claiming, claim races, worker recovery, and queued/embedded API dispatch;
 - date-order inference, year-end date alignment, and dashed/named month parsing;
 - international amount grouping, currency symbols, ISO prefixes/suffixes, and ambiguous `$`;
 - password-protected and corrupt PDFs;
@@ -678,15 +686,49 @@ After `db push`, confirm that `subscription_plans` contains the seeded `free` pl
 
 If you use the optional `NEXT_PUBLIC_SITE_URL`, set it to the canonical HTTPS origin. The `/auth/confirm` route also derives the request origin from forwarded headers so cookie exchange works on the same host.
 
-### 2. Next.js
+### 2. Vercel project
 
-Deploy the repository to Vercel or another Node.js host. Configure:
+This repository deploys as one Vercel project with two services and one daemon,
+defined in `vercel.json`:
+
+| Resource | Type | Root | Public | Purpose |
+| --- | --- | --- | --- | --- |
+| `app` | Service | `.` | Yes, at `/` | Next.js application |
+| `processor` | Service | `services/processor` | No | Containerised FastAPI job API and health endpoint |
+| `processor-worker` | Daemon | `services/processor` | No | Claims queued jobs and runs extraction continuously |
+
+Import the repository as a **multi-service project** so Vercel reads
+`vercel.json`; do not import `app` and `processor` as separate single projects.
+The `app` service declares a binding to `processor`, so Vercel injects the
+processor's internal URL as `PROCESSOR_URL` at runtime. Do not set
+`PROCESSOR_URL` in the Vercel project environment; remove any existing value.
+Bindings resolve only in server-side functions at runtime, not during builds or
+in middleware.
+
+The processor service and worker both use `services/processor/Dockerfile`, so
+Tesseract is available. The container listens on `$PORT` with a default of
+`8000`, while Vercel routes container traffic to port `80` by default. Set
+`PORT=8000` in the Vercel project environment so the router reaches the
+processor; the Next.js service does not use that value for its own routing. The
+worker is pinned to `iad1` in `vercel.json`; change that region if your Supabase
+project runs elsewhere.
+
+In production, `PROCESSING_MODE=queued`: the processor API validates a job and
+returns `202`, while `processor-worker` claims it from `conversion_jobs` and runs
+extraction. In preview and development, the daemon is not available, so use
+`PROCESSING_MODE=embedded` and the processor API runs the job in its own thread
+pool. Set the variable per Vercel environment; the code falls back to `queued`
+only when `VERCEL_ENV=production` is available.
+
+Configure these environment variables for the project:
 
 - `NEXT_PUBLIC_SUPABASE_URL`
 - `NEXT_PUBLIC_SUPABASE_ANON_KEY`
+- `SUPABASE_URL` (processor; use the same project URL)
 - `SUPABASE_SERVICE_ROLE_KEY`
-- `PROCESSOR_URL`
 - `PROCESSOR_API_KEY`
+- `PORT=8000`
+- `PROCESSING_MODE=queued` for Production, `PROCESSING_MODE=embedded` for Preview and Development
 - `NEXT_PUBLIC_SITE_URL`
 - `DODO_PAYMENTS_ENVIRONMENT`
 - `DODO_PAYMENTS_API_KEY`
@@ -695,7 +737,18 @@ Deploy the repository to Vercel or another Node.js host. Configure:
 - `DODO_PRODUCT_PRO_TEST` / `DODO_PRODUCT_PRO_LIVE`
 - `DODO_PRODUCT_BUSINESS_TEST` / `DODO_PRODUCT_BUSINESS_LIVE`
 
-Build with `npm run build` and start with `npm start`. The export route requires the Node.js runtime and keeps `exceljs` external; this is configured in `next.config.ts`.
+`PROCESSOR_API_KEY` must be identical for the app and processor. Each service
+owns its build: Vercel builds the Next.js app with `npm run build`, and builds
+the processor and worker from the same Dockerfile. The export route requires the
+Node.js runtime and keeps `exceljs` external; this is configured in
+`next.config.ts`.
+
+To test the full Vercel service wiring, run `vercel dev` (Docker is required for
+the container service). The daemon is production-only and does not run under
+`vercel dev`; development therefore uses `embedded` mode. When using
+`vercel dev`, leave `PROCESSOR_URL` unset in `.env.local` so the injected
+binding is used. For day-to-day development, the two-process setup in
+[Local development](#local-development) is unchanged.
 
 ### 3. Dodo Payments
 
@@ -707,26 +760,49 @@ Build with `npm run build` and start with `npm start`. The export route requires
 
 Keep the test and live values in different environments. Do not reuse test product ids with live credentials, and do not enable live mode until the checkout, webhook, renewal, cancellation, and portal flows have been verified in test mode.
 
-### 4. Python processor
+### 4. Python processor and worker
 
-Build and run the container:
+The `processor` service is internal and has no public rewrite, so only the `app`
+service can reach it through the binding. The `processor-worker` daemon runs the
+same container image with `python -m app.worker`. It polls the oldest queued
+`conversion_jobs` rows, claims one atomically, and runs the existing extraction
+pipeline with progress reporting and result saving. The app continues to poll
+the authenticated API exactly as before, so the user-facing flow does not
+change.
+
+Production requirements:
+
+- Outbound HTTPS to Supabase.
+- Enough memory for OCR page rendering; OCR jobs are CPU- and memory-heavy.
+- `PROCESSOR_API_KEY` matching the app service.
+- `SUPABASE_SERVICE_ROLE_KEY` supplied as a secret.
+- `PORT=8000` so Vercel routes to the container's Uvicorn listener.
+- `PROCESSING_MODE=queued` in production; use `embedded` in Preview/Development.
+- The Supabase and processing variables listed in the environment section.
+
+Vercel Daemons currently run only in production deployments. Preview and
+development deployments use `embedded` mode, which processes queued jobs inside
+the processor service. The same image can also run as a normal long-running
+container; `embedded` mode remains the default outside production:
 
 ```bash
 docker build -t flowparse-processor services/processor
 docker run --env-file services/processor/.env -p 8000:8000 flowparse-processor
 ```
 
-Deploy the image to a long-running container host (Fly.io, Render, Railway, ECS, etc.). Requirements:
+To exercise the queued worker path locally, set `PROCESSING_MODE=queued` for the
+service and run the worker command alongside it:
 
-- Outbound HTTPS to Supabase.
-- Enough memory for OCR page rendering; OCR jobs are CPU- and memory-heavy.
-- A health check against `/health`.
-- `PROCESSOR_API_KEY` matching the Next.js environment.
-- `SUPABASE_SERVICE_ROLE_KEY` supplied as a secret.
-- `OCR_ENABLED=true` and no `TESSERACT_CMD` override in the container (Tesseract is installed in the image).
-- Do not expose the processor publicly without network restrictions or a private service link. The shared secret is a service credential, not a user credential.
+```bash
+docker run --env-file services/processor/.env flowparse-processor python -m app.worker
+```
 
-Serverless functions are not a good fit for the processor because OCR can exceed request time limits and needs a warm Tesseract installation.
+If the worker is stopped, queued jobs remain in `conversion_jobs` and are picked
+up when it restarts. Jobs stuck in `processing` for longer than
+`STALE_JOB_MINUTES` are marked failed at worker startup, so an interrupted job
+does not stay in progress forever; queued jobs are left for the worker. In all
+deployments, keep the processor off the public internet. The shared secret is a
+service credential, not a user credential.
 
 ### 5. Post-deploy smoke test
 
@@ -736,7 +812,9 @@ Serverless functions are not a good fit for the processor because OCR can exceed
 4. Test password recovery from a real email inbox.
 5. Sign in as a second user and verify complete data isolation.
 6. Run one test-mode checkout and confirm the webhook activates the plan; then cancel it and confirm access ends at the period end.
-7. Check logs for failed extraction, billing webhook signature failures, or processor credential errors.
+7. Check `processor-worker` logs for claimed jobs and completed or failed extractions.
+8. Confirm the processor service has no public URL and that `/api/statements/:id/process` works through the binding.
+9. Check logs for failed extraction, billing webhook signature failures, or processor credential errors.
 
 ---
 
@@ -745,7 +823,7 @@ Serverless functions are not a good fit for the processor because OCR can exceed
 This is an MVP with deliberate scope boundaries:
 
 - **Heuristic extraction.** The parser is layout-aware and now uses declarative bank profiles, but it is not bank-universal. Statement layouts it does not recognize produce partial results, flagged rows, or a failed extraction with an explanation. Unresolved lines are listed in the extraction report rather than invented. Expand the synthetic fixture corpus before claiming broad bank coverage, and follow [`docs/adding-a-bank.md`](docs/adding-a-bank.md) for bank-specific conventions.
-- **In-process job queue.** Jobs run in a thread pool inside the FastAPI process. Interrupted jobs are recovered as failed at processor startup, but there is no durable broker or automatic retry. Use a queue such as SQS/Redis and idempotent workers for higher scale.
+- **Database-backed job queue.** Production uses the `processor-worker` daemon, which polls `conversion_jobs`; local and preview deployments use an in-process thread pool. Jobs are claimed atomically, and interrupted processing jobs are recovered as failed at worker startup, but there is no durable broker or automatic retry. Use a queue such as SQS/Redis and idempotent workers for higher scale.
 - **Best-effort monthly quota.** The allowance is checked before insertion. Two simultaneous uploads at the limit could exceed it by one. Move the check and insert into a single transactional RPC if strict enforcement is required.
 - **Billing is monthly-plan only.** Plan changes, proration, and mid-cycle upgrades are handled in the Dodo customer portal rather than an in-app comparison flow. Page allowances reset on the calendar month, not on the subscription anniversary, so a mid-month subscription starts with a fresh allowance.
 - **Webhook recovery relies on Dodo retries.** A failed webhook returns `5xx` so Dodo redelivers, and processed ids make redelivery safe, but there is no local replay queue. Events that cannot be mapped to a FlowParse user are acknowledged and logged instead of guessed, so a customer created outside the checkout flow needs its `app_user_id` metadata or a linked customer row.
@@ -755,7 +833,7 @@ This is an MVP with deliberate scope boundaries:
 - **OCR language coverage.** English is the default and only packaged model. Install additional Tesseract language data and expose the setting if needed.
 - **Polling, not realtime.** The workspace polls the authenticated API. This is simple and reliable for the MVP but not as efficient as Supabase Realtime or server-sent events at scale.
 - **No MFA, team workspaces, audit log, or granular roles.** The data model is per-user and single-tenant by design.
-- **Processor availability.** If the processor is down, statements stay queued and the UI reports the problem; manual data entry and exports of existing statements still work.
+- **Processor availability.** If the processor API is down, submitting a new statement shows an error; if the worker is down, queued statements wait until it restarts. Manual data entry and exports of existing statements still work.
 - **Production auth email.** Password reset depends on configured SMTP and the correct redirect allow-list. Test both after any domain change.
 
 Before a commercial launch, add monitoring and alerting for processor errors, queue depth, failed extractions, storage growth, and auth email delivery. Rotate the processor shared secret and Supabase service-role key on a schedule, and keep them out of client bundles and logs.

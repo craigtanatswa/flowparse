@@ -137,6 +137,49 @@ class SupabaseRest:
                 status_code=document_response.status_code,
             )
 
+    def list_queued_jobs(self, limit: int = 10) -> list[dict[str, Any]]:
+        """Return the oldest queued jobs for the worker to claim."""
+        with self._client() as client:
+            response = client.get(
+                f"{_base(self.settings)}/rest/v1/conversion_jobs",
+                params={
+                    "status": "eq.queued",
+                    "select": "id,document_id,user_id,attempt,status",
+                    "order": "created_at.asc",
+                    "limit": max(1, int(limit)),
+                },
+                headers=_headers(self.settings),
+            )
+        if response.status_code >= 400:
+            raise SupabaseError(
+                f"Could not list queued conversions (status {response.status_code}).",
+                status_code=response.status_code,
+            )
+        return response.json()
+
+    def claim_next_job(self) -> tuple[dict[str, Any], dict[str, Any]] | None:
+        """Atomically claim the oldest queued job, skipping races.
+
+        The HTTP service only validates jobs in queued mode. The worker uses
+        this method to take ownership before running extraction.
+        """
+        for job in self.list_queued_jobs():
+            document_id = str(job["document_id"])
+            try:
+                document = self.get_document(document_id)
+            except DocumentNotFound:
+                continue
+            if document["user_id"] != job["user_id"]:
+                continue
+            if document["status"] in {"completed", "partial"}:
+                continue
+            try:
+                self.claim_job(str(job["id"]), document_id)
+            except ConversionConflict:
+                continue
+            return job, document
+        return None
+
     def download_document(self, document: dict[str, Any]) -> bytes:
         path = quote(str(document["storage_path"]), safe="/")
         url = f"{_base(self.settings)}/storage/v1/object/{self.settings.supabase_statements_bucket}/{path}"
@@ -210,14 +253,18 @@ class SupabaseRest:
         except ValueError:
             return None
 
-    def claim_stale_jobs(self, older_than_minutes: int) -> int:
+    def claim_stale_jobs(
+        self, older_than_minutes: int, *, include_queued: bool = True
+    ) -> int:
         cutoff = datetime.now(timezone.utc) - timedelta(minutes=older_than_minutes)
         cutoff_iso = cutoff.isoformat()
         with self._client() as client:
             response = client.get(
                 f"{_base(self.settings)}/rest/v1/conversion_jobs",
                 params={
-                    "status": "in.(processing,queued)",
+                    "status": (
+                        "in.(processing,queued)" if include_queued else "eq.processing"
+                    ),
                     "updated_at": f"lt.{cutoff_iso}",
                     "select": "id",
                 },

@@ -89,7 +89,7 @@ export async function POST(_request: Request, { params }: RouteContext) {
   }
 
   try {
-    const response = await fetch(`${processor.url}/v1/jobs`, {
+    const response = await fetch(new URL("v1/jobs", `${processor.url}/`), {
       method: "POST",
       headers: {
         "Content-Type": "application/json",

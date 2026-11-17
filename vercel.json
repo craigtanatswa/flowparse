@@ -1,0 +1,41 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "services": {
+    "app": {
+      "root": ".",
+      "framework": "nextjs",
+      "bindings": [
+        {
+          "type": "service",
+          "service": "processor",
+          "format": "url",
+          "env": "PROCESSOR_URL"
+        }
+      ]
+    },
+    "processor": {
+      "root": "services/processor",
+      "runtime": "container",
+      "entrypoint": "Dockerfile"
+    }
+  },
+  "rewrites": [
+    {
+      "source": "/(.*)",
+      "destination": {
+        "service": "app"
+      }
+    }
+  ],
+  "daemons": {
+    "processor-worker": {
+      "root": "services/processor",
+      "entrypoint": "Dockerfile",
+      "command": ["python", "-m", "app.worker"],
+      "instances": {
+        "iad1": 1
+      },
+      "terminationGracePeriodSeconds": 900
+    }
+  }
+}
