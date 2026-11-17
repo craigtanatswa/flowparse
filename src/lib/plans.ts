@@ -1,5 +1,5 @@
 import type { Tables } from "@/lib/database.types";
-import { MAX_FILES_PER_UPLOAD, MAX_FILE_MB } from "@/lib/constants";
+import { MAX_FILE_MB } from "@/lib/constants";
 
 export type PlanRecord = Tables<"subscription_plans">;
 
@@ -10,13 +10,20 @@ export type PlanRecord = Tables<"subscription_plans">;
 export const FREE_PLAN = {
   id: "free",
   name: "Free",
-  price: "£0",
+  price: "$0",
   cadence: "forever",
-  statementLimit: 25,
-  batchLimit: MAX_FILES_PER_UPLOAD,
+  pageLimit: 3,
+  unlimited: false,
+  batchLimit: 1,
   fileSizeMb: MAX_FILE_MB,
   description:
-    "Everything you need to convert and review statements, with a monthly statement allowance.",
+    "Get started with basic statement conversion and export, with a small monthly page allowance.",
+  features: [
+    "3 processed pages per month",
+    "PDF bank statement uploads",
+    "Excel and CSV exports",
+    "Basic transaction extraction",
+  ],
 } as const;
 
 export interface AccountPlan {
@@ -25,7 +32,9 @@ export interface AccountPlan {
   description: string;
   priceDisplay: string;
   cadence: string;
-  statementLimit: number;
+  /** Processed pages allowed per calendar month; null when unlimited. */
+  pageLimit: number | null;
+  unlimited: boolean;
   batchLimit: number;
   fileSizeMb: number;
   features: string[];
@@ -37,11 +46,79 @@ export const FALLBACK_ACCOUNT_PLAN: AccountPlan = {
   description: FREE_PLAN.description,
   priceDisplay: FREE_PLAN.price,
   cadence: FREE_PLAN.cadence,
-  statementLimit: FREE_PLAN.statementLimit,
+  pageLimit: FREE_PLAN.pageLimit,
+  unlimited: FREE_PLAN.unlimited,
   batchLimit: FREE_PLAN.batchLimit,
   fileSizeMb: FREE_PLAN.fileSizeMb,
-  features: [],
+  features: [...FREE_PLAN.features],
 };
+
+/**
+ * Display data for the plans FlowParse sells. Prices and page allowances must
+ * match the Dodo products configured through `DODO_PRODUCT_*_TEST/LIVE`.
+ */
+export const MARKETING_PLANS = [
+  {
+    id: "free",
+    name: "Free",
+    price: "$0",
+    cadence: "forever",
+    pageAllowance: "3 pages / month",
+    description: "Try FlowParse with a small monthly page allowance.",
+    features: [
+      "3 processed pages per month",
+      "PDF bank statement uploads",
+      "Excel and CSV exports",
+      "Basic transaction extraction",
+    ],
+    highlight: false,
+  },
+  {
+    id: "starter",
+    name: "Starter",
+    price: "$9",
+    cadence: "month",
+    pageAllowance: "100 pages / month",
+    description: "For individuals converting statements regularly.",
+    features: [
+      "100 pages per month",
+      "Multiple document uploads",
+      "Conversion history",
+      "Full export functionality",
+    ],
+    highlight: false,
+  },
+  {
+    id: "pro",
+    name: "Pro",
+    price: "$19",
+    cadence: "month",
+    pageAllowance: "400 pages / month",
+    description: "For busy professionals who need more volume and control.",
+    features: [
+      "400 pages per month",
+      "Bulk processing",
+      "Priority processing",
+      "Advanced reconciliation",
+    ],
+    highlight: true,
+  },
+  {
+    id: "business",
+    name: "Business",
+    price: "$39",
+    cadence: "month",
+    pageAllowance: "Unlimited pages",
+    description: "For finance teams processing statements at scale.",
+    features: [
+      "Unlimited pages per month",
+      "Higher-volume processing",
+      "Bulk exports",
+      "Extended conversion history",
+    ],
+    highlight: false,
+  },
+] as const;
 
 export function accountPlanFromRecord(
   record: PlanRecord | null | undefined
@@ -54,13 +131,18 @@ export function accountPlanFromRecord(
     description: record.description,
     priceDisplay: record.price_display,
     cadence: record.cadence,
-    statementLimit: record.statement_limit,
+    pageLimit: record.page_limit,
+    unlimited: record.unlimited,
     batchLimit: record.batch_limit,
     fileSizeMb: record.file_size_mb,
     features: Array.isArray(record.features)
       ? record.features.filter((item): item is string => typeof item === "string")
       : [],
   };
+}
+
+export function pageAllowanceLabel(plan: AccountPlan): string {
+  return plan.unlimited ? "Unlimited pages" : `${plan.pageLimit ?? 0} pages`;
 }
 
 export function currentMonthStartIso(now = new Date()): string {
@@ -89,10 +171,11 @@ export function nextAllowanceReset(now = new Date()): string {
 }
 
 export function planLimitReached(
-  monthlyStatements: number,
-  limit: number = FREE_PLAN.statementLimit
+  pagesProcessed: number,
+  plan: AccountPlan = FALLBACK_ACCOUNT_PLAN
 ): boolean {
-  return monthlyStatements >= limit;
+  if (plan.unlimited) return false;
+  return pagesProcessed >= (plan.pageLimit ?? 0);
 }
 
 export function planFileSizeBytes(plan: AccountPlan): number {

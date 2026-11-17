@@ -39,29 +39,34 @@ export async function POST(request: Request) {
     );
   }
 
-  let monthlyStatements = account.usage.documents_uploaded;
+  let pagesProcessed = account.usage.pages_processed;
 
   if (!account.usageAvailable) {
-    // Usage triggers should always have a row, but fall back to a direct count
+    // Usage triggers should always have a row, but fall back to a direct read
     // so a transient trigger/read failure does not block uploads.
-    const { count, error: usageError } = await supabase
+    const { data: documents, error: usageError } = await supabase
       .from("uploaded_documents")
-      .select("id", { count: "exact", head: true })
-      .gte("created_at", currentMonthStartIso());
+      .select("page_count")
+      .gte("created_at", currentMonthStartIso())
+      .in("status", ["completed", "partial"]);
 
     if (usageError) {
-      logServerError("Could not check monthly statement allowance", usageError);
+      logServerError("Could not check monthly page allowance", usageError);
       return jsonError(
         "Could not verify your monthly allowance. Please try again.",
         500
       );
     }
-    monthlyStatements = count ?? 0;
+
+    pagesProcessed = (documents ?? []).reduce(
+      (total, document) => total + (document.page_count ?? 0),
+      0
+    );
   }
 
-  if (planLimitReached(monthlyStatements, plan.statementLimit)) {
+  if (planLimitReached(pagesProcessed, plan)) {
     return jsonError(
-      `You have reached the ${plan.name} plan limit of ${plan.statementLimit} statements this month. Your allowance resets on ${nextAllowanceReset()}.`,
+      `You have used all ${plan.pageLimit} pages on the ${plan.name} plan this month. Your allowance resets on ${nextAllowanceReset()}. Upgrade your plan to keep processing statements.`,
       403
     );
   }

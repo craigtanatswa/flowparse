@@ -150,8 +150,9 @@ export default async function DashboardPage() {
       .eq("status", "failed"),
     supabase
       .from("uploaded_documents")
-      .select("id", { count: "exact", head: true })
-      .gte("created_at", monthStart),
+      .select("page_count")
+      .gte("created_at", monthStart)
+      .in("status", ["completed", "partial"]),
   ]);
 
   for (const result of [
@@ -173,13 +174,18 @@ export default async function DashboardPage() {
   const reviewCount = reviewCountResult.count ?? 0;
   const failedCount = failedCountResult.count ?? 0;
   const { plan, usage } = account;
-  const monthStatements = account.usageAvailable
-    ? usage.documents_uploaded
-    : monthCountResult.count ?? 0;
-  const usagePercent = Math.min(
-    100,
-    Math.round((monthStatements / plan.statementLimit) * 100)
-  );
+  const monthPages = account.usageAvailable
+    ? usage.pages_processed
+    : (monthCountResult.data ?? []).reduce(
+        (total, document) => total + (document.page_count ?? 0),
+        0
+      );
+  const usagePercent = plan.unlimited
+    ? 0
+    : Math.min(
+        100,
+        Math.round((monthPages / (plan.pageLimit ?? 1)) * 100)
+      );
   const accountName =
     account.profile?.display_name?.trim() ||
     user.email?.split("@")[0]?.replace(/[._-]+/g, " ") ||
@@ -239,7 +245,7 @@ export default async function DashboardPage() {
 
       <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_360px]">
         <div className="space-y-6">
-          <UploadPanel />
+          <UploadPanel maxFiles={plan.batchLimit} />
 
           <Card>
             <CardHeader className="flex-row items-center justify-between gap-3 border-b border-border/70">
@@ -311,31 +317,41 @@ export default async function DashboardPage() {
 
               <div className="mt-5 flex items-end justify-between gap-3">
                 <p className="text-[13px] font-medium text-foreground">
-                  {monthStatements}
+                  {monthPages}
                   <span className="ml-1 text-[11.5px] font-normal text-muted-foreground">
-                    of {plan.statementLimit} statements this month
+                    {plan.unlimited
+                      ? "pages processed this month"
+                      : `of ${plan.pageLimit} pages this month`}
                   </span>
                 </p>
                 <span className="text-[11px] tabular-nums text-muted-foreground">
-                  {usagePercent}%
+                  {plan.unlimited ? "Unlimited" : `${usagePercent}%`}
                 </span>
               </div>
 
-              <div
-                className="mt-2.5 h-1.5 w-full overflow-hidden rounded-full bg-muted"
-                role="progressbar"
-                aria-valuenow={monthStatements}
-                aria-valuemin={0}
-                aria-valuemax={plan.statementLimit}
-                aria-label="Monthly statement allowance used"
-              >
+              {plan.unlimited ? (
+                <div className="mt-2.5 h-1.5 w-full overflow-hidden rounded-full bg-accent">
+                  <div className="h-full w-full rounded-full bg-primary/45" />
+                </div>
+              ) : (
                 <div
-                  className="h-full rounded-full bg-primary transition-[width] duration-300"
-                  style={{ width: `${usagePercent}%` }}
-                />
-              </div>
+                  className="mt-2.5 h-1.5 w-full overflow-hidden rounded-full bg-muted"
+                  role="progressbar"
+                  aria-valuenow={monthPages}
+                  aria-valuemin={0}
+                  aria-valuemax={plan.pageLimit ?? 0}
+                  aria-label="Monthly page allowance used"
+                >
+                  <div
+                    className="h-full rounded-full bg-primary transition-[width] duration-300"
+                    style={{ width: `${usagePercent}%` }}
+                  />
+                </div>
+              )}
               <p className="mt-2 text-[10.5px] text-muted-foreground">
-                Resets on {nextAllowanceReset()}.
+                {plan.unlimited
+                  ? "Your plan has no monthly page cap."
+                  : `Resets on ${nextAllowanceReset()}.`}
               </p>
 
               <div className="mt-4 flex items-center justify-between border-t border-border/70 pt-3 text-[11px]">

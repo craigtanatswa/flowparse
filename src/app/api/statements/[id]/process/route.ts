@@ -1,8 +1,10 @@
 import { NextResponse } from "next/server";
 
 import { getApiContext, jsonError, parseUuid } from "@/lib/api";
+import { loadAccountData } from "@/lib/account";
 import { getProcessorEnv } from "@/lib/env";
 import { logServerError } from "@/lib/log";
+import { nextAllowanceReset, planLimitReached } from "@/lib/plans";
 
 type RouteContext = { params: Promise<{ id: string }> };
 
@@ -45,6 +47,17 @@ export async function POST(_request: Request, { params }: RouteContext) {
     return jsonError(
       "This statement has already been extracted. Upload a new copy to run extraction again.",
       409
+    );
+  }
+
+  const account = await loadAccountData(supabase, user.id);
+  if (
+    account.usageAvailable &&
+    planLimitReached(account.usage.pages_processed, account.plan)
+  ) {
+    return jsonError(
+      `You have used all ${account.plan.pageLimit} pages on the ${account.plan.name} plan this month. Your allowance resets on ${nextAllowanceReset()}. Upgrade your plan to keep processing statements.`,
+      403
     );
   }
 

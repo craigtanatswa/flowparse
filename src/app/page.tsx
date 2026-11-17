@@ -20,7 +20,7 @@ import { UploadDemo } from "@/components/marketing/upload-demo";
 import { Logo, LogoGlyph, LogoMark } from "@/components/brand/logo";
 import { Button } from "@/components/ui/button";
 import { getOptionalUser } from "@/lib/auth";
-import { FREE_PLAN } from "@/lib/plans";
+import { FREE_PLAN, MARKETING_PLANS } from "@/lib/plans";
 
 const features = [
   {
@@ -88,25 +88,8 @@ const faqs = [
   },
   {
     question: "How much does FlowParse cost?",
-    answer: `The Free plan includes ${FREE_PLAN.statementLimit} statements per calendar month, PDFs up to ${FREE_PLAN.fileSizeMb} MB, and up to ${FREE_PLAN.batchLimit} files per upload batch. No card is required. A team plan is in development.`,
+    answer: `The Free plan includes ${FREE_PLAN.pageLimit} processed pages per calendar month, PDFs up to ${FREE_PLAN.fileSizeMb} MB, and basic transaction extraction. Starter is $9/month for 100 pages, Pro is $19/month for 400 pages, and Business is $39/month for unlimited pages. No card is required for Free.`,
   },
-];
-
-const freeFeatures = [
-  `${FREE_PLAN.statementLimit} statements per month`,
-  `${FREE_PLAN.batchLimit} PDFs per upload batch`,
-  `PDFs up to ${FREE_PLAN.fileSizeMb} MB each`,
-  "Digital and scanned statements",
-  "Editable transaction preview",
-  "Excel and CSV exports",
-  "Private per-user storage",
-];
-
-const teamFeatures = [
-  "Higher monthly allowances",
-  "Shared team workspace",
-  "Priority processing",
-  "Centralised invoicing",
 ];
 
 const extractedFields = [
@@ -127,6 +110,7 @@ export default async function LandingPage() {
   const primaryHref = user
     ? "/dashboard#upload"
     : "/signup?next=%2Fdashboard%23upload";
+  const plansHref = user ? "/settings#plans" : "/signup?next=%2Fsettings%23plans";
 
   return (
     <div className="min-h-screen bg-white">
@@ -233,7 +217,7 @@ export default async function LandingPage() {
               </div>
 
               <p className="mt-6 text-[11.5px] text-muted-foreground">
-                Free plan includes {FREE_PLAN.statementLimit} statements per month.
+                Free plan includes {FREE_PLAN.pageLimit} processed pages per month.
               </p>
             </div>
 
@@ -407,7 +391,7 @@ export default async function LandingPage() {
                   <div>
                     <dt className="text-muted-foreground">Per batch</dt>
                     <dd className="mt-0.5 font-medium text-foreground">
-                      Up to {FREE_PLAN.batchLimit} files
+                      Varies by plan
                     </dd>
                   </div>
                   <div>
@@ -553,96 +537,85 @@ export default async function LandingPage() {
                 Start free. Upgrade when you need more.
               </h2>
               <p className="mt-4 text-[14px] leading-7 text-muted-foreground">
-                Convert and export your first statements without a card. Higher-volume
-                plans for firms and finance teams are in development.
+                Convert and export your first statements without a card, then upgrade
+                for more pages, bulk processing, and priority extraction.
               </p>
             </div>
 
-            <div className="mx-auto mt-11 grid max-w-4xl gap-4 lg:grid-cols-2">
-              <div className="relative rounded-2xl border border-primary/25 bg-white p-6 shadow-[0_12px_40px_-24px_rgba(14,122,102,0.35)] ring-1 ring-primary/5 sm:p-7">
-                <div className="flex items-start justify-between">
-                  <div>
-                    <p className="text-[13px] font-semibold text-foreground">Free</p>
-                    <p className="mt-1 text-[11.5px] text-muted-foreground">
-                      For individual statements and small books.
-                    </p>
-                  </div>
-                  <span className="rounded-full bg-accent px-2.5 py-1 text-[10px] font-semibold text-primary">
-                    Available now
-                  </span>
-                </div>
-                <div className="mt-6 flex items-end gap-1.5">
-                  <span className="text-[38px] font-semibold leading-none tracking-[-0.04em]">
-                    {FREE_PLAN.price}
-                  </span>
-                  <span className="pb-1 text-[12px] text-muted-foreground">
-                    / month
-                  </span>
-                </div>
-                <p className="mt-2 text-[11px] text-muted-foreground">
-                  No card required. Allowance resets each calendar month.
-                </p>
-
-                <ul className="mt-6 space-y-2.5">
-                  {freeFeatures.map((feature) => (
-                    <li key={feature} className="flex items-start gap-2.5 text-[12px]">
-                      <span className="mt-0.5 flex size-4 shrink-0 items-center justify-center rounded-full bg-accent text-primary">
-                        <Check className="size-2.5" />
+            <div className="mx-auto mt-11 grid max-w-6xl gap-4 sm:grid-cols-2 xl:grid-cols-4">
+              {MARKETING_PLANS.map((marketingPlan) => (
+                <div
+                  key={marketingPlan.id}
+                  className={`relative flex flex-col rounded-2xl border bg-white p-6 ${
+                    marketingPlan.highlight
+                      ? "border-primary/35 shadow-[0_12px_40px_-24px_rgba(14,122,102,0.35)] ring-1 ring-primary/5"
+                      : "border-border"
+                  }`}
+                >
+                  <div className="flex items-start justify-between gap-2">
+                    <div>
+                      <p className="text-[13px] font-semibold text-foreground">
+                        {marketingPlan.name}
+                      </p>
+                      <p className="mt-1 text-[11px] leading-5 text-muted-foreground">
+                        {marketingPlan.description}
+                      </p>
+                    </div>
+                    {marketingPlan.highlight ? (
+                      <span className="shrink-0 rounded-full bg-accent px-2.5 py-1 text-[9.5px] font-semibold text-primary">
+                        Popular
                       </span>
-                      <span className="text-foreground/75">{feature}</span>
-                    </li>
-                  ))}
-                </ul>
-
-                <Button asChild size="lg" className="mt-7 w-full">
-                  <Link href={primaryHref}>
-                    Convert a Statement
-                    <ArrowRight />
-                  </Link>
-                </Button>
-              </div>
-
-              <div className="rounded-2xl border border-border bg-white p-6 sm:p-7">
-                <div className="flex items-start justify-between">
-                  <div>
-                    <p className="text-[13px] font-semibold text-foreground">Team</p>
-                    <p className="mt-1 text-[11.5px] text-muted-foreground">
-                      For firms processing statements at volume.
-                    </p>
+                    ) : null}
                   </div>
-                  <span className="rounded-full border border-border bg-muted/60 px-2.5 py-1 text-[10px] font-semibold text-muted-foreground">
-                    Coming soon
-                  </span>
-                </div>
-                <div className="mt-6 flex items-end gap-1.5">
-                  <span className="text-[38px] font-semibold leading-none tracking-[-0.04em]">
-                    Custom
-                  </span>
-                </div>
-                <p className="mt-2 text-[11px] text-muted-foreground">
-                  Planned capabilities — not available to purchase yet.
-                </p>
 
-                <ul className="mt-6 space-y-2.5">
-                  {teamFeatures.map((feature) => (
-                    <li key={feature} className="flex items-start gap-2.5 text-[12px]">
-                      <span className="mt-0.5 flex size-4 shrink-0 items-center justify-center rounded-full border border-border text-muted-foreground">
-                        <Check className="size-2.5" />
-                      </span>
-                      <span className="text-muted-foreground">{feature}</span>
-                    </li>
-                  ))}
-                </ul>
+                  <div className="mt-5 flex items-end gap-1.5">
+                    <span className="text-[34px] font-semibold leading-none tracking-[-0.04em]">
+                      {marketingPlan.price}
+                    </span>
+                    <span className="pb-1 text-[11px] text-muted-foreground">
+                      / {marketingPlan.cadence}
+                    </span>
+                  </div>
+                  <p className="mt-2 text-[10.5px] text-muted-foreground">
+                    {marketingPlan.pageAllowance}
+                  </p>
 
-                <Button size="lg" variant="outline" className="mt-7 w-full" disabled>
-                  Coming soon
-                </Button>
-              </div>
+                  <ul className="mt-5 space-y-2.5">
+                    {marketingPlan.features.map((feature) => (
+                      <li
+                        key={feature}
+                        className="flex items-start gap-2.5 text-[11.5px]"
+                      >
+                        <span className="mt-0.5 flex size-4 shrink-0 items-center justify-center rounded-full bg-accent text-primary">
+                          <Check className="size-2.5" />
+                        </span>
+                        <span className="text-foreground/75">{feature}</span>
+                      </li>
+                    ))}
+                  </ul>
+
+                  <div className="mt-auto pt-6">
+                    <Button
+                      asChild
+                      size="lg"
+                      variant={marketingPlan.highlight ? "default" : "outline"}
+                      className="w-full"
+                    >
+                      <Link href={marketingPlan.id === "free" ? primaryHref : plansHref}>
+                        {marketingPlan.id === "free"
+                          ? "Start free"
+                          : `Choose ${marketingPlan.name}`}
+                        <ArrowRight />
+                      </Link>
+                    </Button>
+                  </div>
+                </div>
+              ))}
             </div>
 
             <p className="mx-auto mt-5 max-w-xl text-center text-[10.5px] leading-5 text-muted-foreground">
-              Only the Free plan is available today. No payment details are collected,
-              and no subscription is created when you sign up.
+              Prices are in USD. Paid plans renew monthly until cancelled. Payments,
+              invoices and tax are handled securely by Dodo Payments.
             </p>
           </div>
         </section>

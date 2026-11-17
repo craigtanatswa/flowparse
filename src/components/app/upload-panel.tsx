@@ -92,8 +92,15 @@ function statusLabel(item: UploadItem): string {
   }
 }
 
-export function UploadPanel({ compact = false }: { compact?: boolean }) {
+export function UploadPanel({
+  compact = false,
+  maxFiles = MAX_FILES_PER_UPLOAD,
+}: {
+  compact?: boolean;
+  maxFiles?: number;
+}) {
   const router = useRouter();
+  const batchLimit = Math.max(1, Math.min(maxFiles, MAX_FILES_PER_UPLOAD));
   const inputRef = React.useRef<HTMLInputElement>(null);
   const itemsRef = React.useRef<UploadItem[]>([]);
   const [items, setItems] = React.useState<UploadItem[]>([]);
@@ -279,11 +286,11 @@ export function UploadPanel({ compact = false }: { compact?: boolean }) {
 
     const remainingSlots = Math.max(
       0,
-      MAX_FILES_PER_UPLOAD - itemsRef.current.filter((item) => ACTIVE_STATUSES.has(item.status) || item.status === "ready").length
+      batchLimit - itemsRef.current.filter((item) => ACTIVE_STATUSES.has(item.status) || item.status === "ready").length
     );
     const toAdd = accepted.slice(0, remainingSlots);
     if (accepted.length > remainingSlots) {
-      rejected.push(`Only ${MAX_FILES_PER_UPLOAD} files can be queued at once.`);
+      rejected.push(`Only ${batchLimit} file${batchLimit === 1 ? "" : "s"} can be queued at once.`);
     }
 
     if (toAdd.length) {
@@ -504,8 +511,8 @@ export function UploadPanel({ compact = false }: { compact?: boolean }) {
               Upload statements
             </h2>
             <p className="mt-0.5 text-xs text-muted-foreground">
-              Digital or scanned PDFs · up to {MAX_FILES_PER_UPLOAD} at a time ·{" "}
-              {MAX_FILE_MB} MB each
+              Digital or scanned PDFs · up to {batchLimit}{" "}
+              {batchLimit === 1 ? "file" : "files"} at a time · {MAX_FILE_MB} MB each
             </p>
           </div>
           <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
