@@ -284,7 +284,7 @@ export const extractionLandingPages: LandingPageContent[] = [
     keyPoints: [
       "Excel and CSV exports from the same reviewed ledger.",
       "Consistent columns across statements, so months can be appended.",
-      "Page-based allowances: 3 pages free, 100 on Starter, 400 on Pro, unlimited on Business.",
+      "Page-based allowances: 3 pages free, 100 on Starter, 1,000 on Pro, 10,000 on Business.",
       "Batch limits from 1 file on Free to 10 files on Pro and Business.",
     ],
     steps: [

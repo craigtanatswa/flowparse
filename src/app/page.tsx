@@ -127,7 +127,7 @@ const faqs = [
   },
   {
     question: "How much does FlowParse cost?",
-    answer: `The Free plan includes ${FREE_PLAN.pageLimit} processed pages per calendar month, PDFs up to ${FREE_PLAN.fileSizeMb} MB, and basic transaction extraction. Starter is $9/month for 100 pages, Pro is $19/month for 400 pages, and Business is $39/month for unlimited pages. No card is required for Free.`,
+    answer: `The Free plan includes ${FREE_PLAN.pageLimit} processed pages per calendar month, PDFs up to ${FREE_PLAN.fileSizeMb} MB, and basic transaction extraction. Starter is $9/month for 100 pages, Pro is $19/month for 1,000 pages, and Business is $39/month for 10,000 pages. No card is required for Free.`,
   },
 ];
 

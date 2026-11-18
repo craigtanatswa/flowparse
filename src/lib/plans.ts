@@ -93,10 +93,10 @@ export const MARKETING_PLANS = [
     name: "Pro",
     price: "$19",
     cadence: "month",
-    pageAllowance: "400 pages / month",
+    pageAllowance: "1,000 pages / month",
     description: "For busy professionals who need more volume and control.",
     features: [
-      "400 pages per month",
+      "1,000 pages per month",
       "Bulk processing",
       "Priority processing",
       "Advanced reconciliation",
@@ -108,10 +108,10 @@ export const MARKETING_PLANS = [
     name: "Business",
     price: "$39",
     cadence: "month",
-    pageAllowance: "Unlimited pages",
+    pageAllowance: "10,000 pages / month",
     description: "For finance teams processing statements at scale.",
     features: [
-      "Unlimited pages per month",
+      "10,000 pages per month",
       "Higher-volume processing",
       "Bulk exports",
       "Extended conversion history",
@@ -142,7 +142,9 @@ export function accountPlanFromRecord(
 }
 
 export function pageAllowanceLabel(plan: AccountPlan): string {
-  return plan.unlimited ? "Unlimited pages" : `${plan.pageLimit ?? 0} pages`;
+  return plan.unlimited
+    ? "Unlimited pages"
+    : `${(plan.pageLimit ?? 0).toLocaleString("en-GB")} pages`;
 }
 
 export function currentMonthStartIso(now = new Date()): string {

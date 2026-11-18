@@ -532,8 +532,8 @@ Plans live in `subscription_plans`, so limits can be changed without a redeploy.
 | --- | --- | --- | --- | --- | --- |
 | Free | $0 | 3 | 1 | 25 MB | No |
 | Starter | $9 | 100 | 5 | 25 MB | Yes |
-| Pro | $19 | 400 | 10 | 25 MB | Yes |
-| Business | $39 | Unlimited | 10 | 25 MB | Yes |
+| Pro | $19 | 1,000 | 10 | 25 MB | Yes |
+| Business | $39 | 10,000 | 10 | 25 MB | Yes |
 
 Processing limits remain: 100 pages per PDF, OCR enabled by default (English), and stale jobs marked failed after 20 minutes at processor startup.
 
