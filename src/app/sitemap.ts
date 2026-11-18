@@ -3,7 +3,7 @@ import type { MetadataRoute } from "next";
 import { ARTICLES, articlePath } from "@/lib/seo/articles";
 import { BANK_PAGES } from "@/lib/seo/banks";
 import { LANDING_PAGES } from "@/lib/seo/landing";
-import { absoluteUrl } from "@/lib/seo/site";
+import { absoluteUrl, SITE_URL } from "@/lib/seo/site";
 
 export default function sitemap(): MetadataRoute.Sitemap {
   const contentDate = "2026-11-18";
@@ -33,7 +33,7 @@ export default function sitemap(): MetadataRoute.Sitemap {
 
   return [
     {
-      url: absoluteUrl("/"),
+      url: SITE_URL,
       lastModified: contentDate,
       changeFrequency: "weekly",
       priority: 1,
