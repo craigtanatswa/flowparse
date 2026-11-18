@@ -571,11 +571,11 @@ Because the webhook is idempotent, a retried delivery cannot apply a plan twice 
 
 **Test mode.** `DODO_PAYMENTS_ENVIRONMENT` defaults to `test_mode`, and any value other than `live_mode` keeps test mode. The Dodo client is constructed with the matching environment, and product ids are resolved from the matching `_TEST`/`_LIVE` variables, so test and live configuration cannot be mixed by accident. Use Dodo's test cards (`4242 4242 4242 4242` for success, `4000 0000 0000 0341` for a decline) and the webhook relay shown above to exercise the lifecycle locally.
 
-**Live mode.** The four live products in the table above already exist in the live business. Switching to live is a configuration change, not a code change:
+**Live mode.** FlowParse is deployed at `https://flowparse.vercel.app`, the four live products in the table above exist in the live business, and the live webhook endpoint `ep_3MFcC1CJgwhvyrRGwclbiRZAGAl` is registered for `https://flowparse.vercel.app/api/webhooks/dodo`. Switching to live is a configuration change, not a code change:
 
-1. Deploy the app to a public HTTPS host, because Dodo cannot deliver live webhooks to `localhost`.
-2. In Dodo live mode, register `https://<your-host>/api/webhooks/dodo` for the subscription events and copy its signing secret.
-3. Set `DODO_PAYMENTS_ENVIRONMENT=live_mode`, the live API key, the live webhook secret, and the four `_LIVE` product ids in the host's secret store. Keep the test values for development and preview environments.
+1. Keep the app on a public HTTPS host, because Dodo cannot deliver live webhooks to `localhost`.
+2. Keep the live webhook endpoint registered for the subscription events and its signing secret in the host's secret store.
+3. Set `DODO_PAYMENTS_ENVIRONMENT=live_mode`, the live API key, the live webhook secret, and the four `_LIVE` product ids for Production only. Keep the test values for development and preview environments.
 4. Confirm the deployment reports a live-mode Dodo client, that the four `_LIVE` ids resolve, and that an unsigned webhook is rejected with `401`.
 
 Never put live credentials in a committed file or a client bundle, and never reuse test product ids with live credentials. A live checkout charges a real card, so it is a customer action; validate the flow with a real low-value purchase only when you are ready to take payments.
