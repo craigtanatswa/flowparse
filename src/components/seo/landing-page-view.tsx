@@ -169,9 +169,9 @@ export function LandingPageView({ page }: { page: LandingPageContent }) {
             {page.sections.map((section) => {
               const id = headingId(section.heading);
               return (
-                <section key={section.heading} aria-labelledby={`${id}-heading`}>
+                <section key={section.heading} aria-labelledby={id}>
                   <h2
-                    id={`${id}-heading`}
+                    id={id}
                     className="scroll-mt-24 text-[22px] font-semibold tracking-[-0.025em]"
                   >
                     {section.heading}

@@ -141,9 +141,9 @@ export function ArticleView({ article }: { article: ArticleContent }) {
             {article.sections.map((section) => {
               const id = headingId(section.heading);
               return (
-                <section key={section.heading} aria-labelledby={`${id}-heading`}>
+                <section key={section.heading} aria-labelledby={id}>
                   <h2
-                    id={`${id}-heading`}
+                    id={id}
                     className="scroll-mt-24 text-[21px] font-semibold tracking-[-0.025em]"
                   >
                     {section.heading}
