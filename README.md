@@ -575,7 +575,7 @@ Because the webhook is idempotent, a retried delivery cannot apply a plan twice 
 
 1. Keep the app on a public HTTPS host, because Dodo cannot deliver live webhooks to `localhost`.
 2. Keep the live webhook endpoint registered for the subscription events and its signing secret in the host's secret store.
-3. Set `DODO_PAYMENTS_ENVIRONMENT=live_mode`, the live API key, the live webhook secret, and the four `_LIVE` product ids for Production only. Keep the test values for development and preview environments.
+3. Set `DODO_PAYMENTS_ENVIRONMENT=live_mode`, the live API key, the live webhook secret, the four `_LIVE` product ids, and `NEXT_PUBLIC_SITE_URL=https://flowparse.vercel.app` for Production only. The site URL controls checkout return links and auth email redirects, so it must be the public origin rather than `localhost`. Keep the test values for development and preview environments.
 4. Confirm the deployment reports a live-mode Dodo client, that the four `_LIVE` ids resolve, and that an unsigned webhook is rejected with `401`.
 
 Never put live credentials in a committed file or a client bundle, and never reuse test product ids with live credentials. A live checkout charges a real card, so it is a customer action; validate the flow with a real low-value purchase only when you are ready to take payments.
