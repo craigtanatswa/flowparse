@@ -2,6 +2,14 @@ import type { Metadata } from "next";
 import { Geist, Geist_Mono, Poppins } from "next/font/google";
 import { Toaster } from "sonner";
 
+import {
+  OG_IMAGE_ALT,
+  OG_IMAGE_PATH,
+  SITE_DESCRIPTION,
+  SITE_NAME,
+  SITE_URL,
+} from "@/lib/seo/site";
+
 import "./globals.css";
 
 const geistSans = Geist({
@@ -22,13 +30,50 @@ const poppins = Poppins({
 });
 
 export const metadata: Metadata = {
+  metadataBase: new URL(SITE_URL),
   title: {
-    default: "FlowParse — Turn bank statements into structured financial data",
-    template: "%s · FlowParse",
+    default: `${SITE_NAME} — Convert bank statements to Excel and CSV`,
+    template: `%s · ${SITE_NAME}`,
   },
-  description:
-    "Convert PDF bank statements into reconciled Excel and CSV files. Digital and scanned statements supported, with an editable review step before you export.",
-  applicationName: "FlowParse",
+  description: SITE_DESCRIPTION,
+  applicationName: SITE_NAME,
+  authors: [{ name: SITE_NAME, url: SITE_URL }],
+  creator: SITE_NAME,
+  publisher: SITE_NAME,
+  category: "finance",
+  robots: {
+    index: true,
+    follow: true,
+    googleBot: {
+      index: true,
+      follow: true,
+      "max-image-preview": "large",
+      "max-snippet": -1,
+      "max-video-preview": -1,
+    },
+  },
+  openGraph: {
+    type: "website",
+    siteName: SITE_NAME,
+    locale: "en_US",
+    url: SITE_URL,
+    title: `${SITE_NAME} — Convert bank statements to Excel and CSV`,
+    description: SITE_DESCRIPTION,
+    images: [
+      {
+        url: OG_IMAGE_PATH,
+        width: 1200,
+        height: 630,
+        alt: OG_IMAGE_ALT,
+      },
+    ],
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: `${SITE_NAME} — Convert bank statements to Excel and CSV`,
+    description: SITE_DESCRIPTION,
+    images: [OG_IMAGE_PATH],
+  },
 };
 
 export default function RootLayout({

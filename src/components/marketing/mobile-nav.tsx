@@ -6,15 +6,23 @@ import { Menu, X } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 
-const links = [
+const defaultLinks = [
   { href: "#how-it-works", label: "How it works" },
   { href: "#features", label: "Features" },
   { href: "#formats", label: "Formats" },
   { href: "#pricing", label: "Pricing" },
   { href: "#faq", label: "FAQ" },
+  { href: "/resources", label: "Resources" },
+  { href: "/banks", label: "Bank guides" },
 ];
 
-export function MarketingMobileNav({ signedIn }: { signedIn: boolean }) {
+export function MarketingMobileNav({
+  signedIn,
+  links = defaultLinks,
+}: {
+  signedIn: boolean;
+  links?: Array<{ href: string; label: string }>;
+}) {
   const [open, setOpen] = useState(false);
 
   return (

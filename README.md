@@ -15,6 +15,7 @@ FlowParse is a commercial-ready SaaS MVP that converts PDF bank statements into 
 | Area | Capability |
 | --- | --- |
 | Landing page | Product positioning, upload demonstration, how it works, features, supported formats, security, pricing, FAQ, and footer |
+| SEO and content | Nine solution landing pages, tested bank guides, a resources section with articles, XML sitemap, robots policy, canonical URLs, Open Graph images and JSON-LD |
 | Authentication | Email/password sign-up, sign-in, sign-out, forgot password, and password reset |
 | Dashboard | Statement totals, transaction totals, rows needing review, failed conversions, monthly allowance, and recent conversions |
 | Conversion workspace | Multi-file drag and drop, PDF validation, real stage/percentage progress, editable ledger, reconciliation, extraction report, per-file retry, delete, and exports |
@@ -162,6 +163,10 @@ provide conservative defaults only; explicit document evidence always wins.
 src/
   app/
     page.tsx                     Marketing landing page
+    (marketing)/                 Solution pages, bank guides and resources
+    sitemap.ts                   Generated XML sitemap
+    robots.ts                    Crawl policy
+    opengraph-image.tsx          Generated social share card
     (auth)/                      Login, sign-up, forgot password, reset password
     auth/confirm/route.ts        Email confirmation and recovery link exchange
     (app)/
@@ -177,6 +182,7 @@ src/
     auth/                        Auth forms and shell
     brand/                       Logo lockup, app tile, and glyph components
     marketing/                   Landing upload demo and mobile navigation
+    seo/                         Marketing shell, templates, breadcrumbs, JSON-LD
     statements/                  Ledger editor, reconciliation, report, detail shell
     ui/                          Shared UI primitives
   lib/
@@ -186,6 +192,7 @@ src/
     billing-sync.ts              Authoritative Dodo re-read and idempotent apply
     dodo.ts                      Server-only Dodo client and product mapping
     plans.ts                     Plan catalogue helpers and allowance formatting
+    seo/                         Site metadata, solution/bank/article content
     validation.ts                Zod request schemas
     export.ts                    CSV and XLSX generation
 public/
@@ -579,6 +586,55 @@ Because the webhook is idempotent, a retried delivery cannot apply a plan twice 
 4. Confirm the deployment reports a live-mode Dodo client, that the four `_LIVE` ids resolve, and that an unsigned webhook is rejected with `401`.
 
 Never put live credentials in a committed file or a client bundle, and never reuse test product ids with live credentials. A live checkout charges a real card, so it is a customer action; validate the flow with a real low-value purchase only when you are ready to take payments.
+
+---
+
+## SEO and content
+
+The public marketing surface is built from typed content modules rather than hand-written copies of the same template.
+
+| Route | Purpose | Rendering |
+| --- | --- | --- |
+| `/` | Product landing page | Server-rendered (auth-aware CTA) |
+| `/<conversion-slug>` | Nine solution pages (`convert-bank-statement-pdf-to-excel`, `bank-statement-ocr`, `bank-statement-converter-for-accountants`, and so on) | Static |
+| `/banks` | Index of bank-specific guides | Static |
+| `/banks/[slug]` | Bank statement guide for a tested layout | SSG (`generateStaticParams`) |
+| `/resources` | Guide index | Static |
+| `/resources/[slug]` | Long-form article template | SSG |
+| `/sitemap.xml` | XML sitemap generated from the same content modules | Metadata route |
+| `/robots.txt` | Crawl policy and sitemap reference | Metadata route |
+| `/opengraph-image` | Generated 1200×630 social card | Image route |
+
+Technical SEO lives in `src/lib/seo/` and `src/components/seo/`:
+
+- `site.ts` holds the canonical origin, site name and absolute-URL helper. `NEXT_PUBLIC_SITE_URL` must be the public production origin; the fallback is the Vercel domain.
+- `metadata.ts` builds per-page canonical, Open Graph and Twitter metadata.
+- Each landing page, article and bank guide emits JSON-LD: `WebPage`/`BlogPosting`, `BreadcrumbList` and `FAQPage`. The home page emits `Organization`, `WebSite` and `SoftwareApplication`.
+- The marketing shell is static: it does not read cookies, so content pages are prerendered and cached.
+- `sitemap.ts` includes only public, indexable content. Auth and app routes are excluded by `robots.ts`.
+
+### Adding a landing page
+
+1. Add a `LandingPageContent` object to one of the modules in `src/lib/seo/landing/` (or add a new module and export it from `index.ts`).
+2. Create `src/app/(marketing)/<slug>/page.tsx` using the existing landing-page template. The route uses the shared metadata helper and renders `LandingPageView`.
+3. Add the slug to internal links where it is relevant, and to the sitemap automatically via `LANDING_PAGES`.
+
+Use a new page only for a distinct search intent. Do not create near-duplicate pages for every phrasing of the same query; the nine solution pages cover different intents and should not be multiplied artificially.
+
+### Adding a bank page
+
+Bank pages are intentionally gated on tested layouts:
+
+1. Add a parser fixture for the bank and assert its profile and reconciliation in the processor tests.
+2. Add the bank to `BANK_PAGES` in `src/lib/seo/banks.ts` with the profile defaults, the tested layouts and an independence disclaimer.
+3. The `/banks/[slug]` route, sitemap entry, bank index card and footer link are generated from the registry.
+
+Never add a bank page based only on a name in the profile registry. The page must state what was tested and must not imply affiliation or guaranteed accuracy.
+
+### Adding an article
+
+Add an `ArticleContent` object to `src/lib/seo/articles/`, export it from `index.ts`, and the index page, related links and sitemap update automatically. Articles should include a unique introduction, sections with substantive detail, an FAQ and links to the relevant solution pages. Avoid publishing the same article under multiple titles.
+
 
 ---
 

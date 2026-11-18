@@ -1,3 +1,4 @@
+import type { Metadata } from "next";
 import Link from "next/link";
 import {
   ArrowRight,
@@ -15,12 +16,50 @@ import {
   UploadCloud,
 } from "lucide-react";
 
+import { JsonLd } from "@/components/seo/json-ld";
 import { MarketingMobileNav } from "@/components/marketing/mobile-nav";
 import { UploadDemo } from "@/components/marketing/upload-demo";
 import { Logo, LogoGlyph, LogoMark } from "@/components/brand/logo";
 import { Button } from "@/components/ui/button";
 import { getOptionalUser } from "@/lib/auth";
 import { FREE_PLAN, MARKETING_PLANS } from "@/lib/plans";
+import {
+  OG_IMAGE_ALT,
+  OG_IMAGE_PATH,
+  SITE_DESCRIPTION,
+  SITE_NAME,
+  SITE_URL,
+} from "@/lib/seo/site";
+
+export const metadata: Metadata = {
+  title: {
+    absolute: "FlowParse — Convert bank statements to Excel and CSV",
+  },
+  description: SITE_DESCRIPTION,
+  alternates: { canonical: `${SITE_URL}/` },
+  openGraph: {
+    type: "website",
+    siteName: SITE_NAME,
+    locale: "en_US",
+    url: SITE_URL,
+    title: "FlowParse — Convert bank statements to Excel and CSV",
+    description: SITE_DESCRIPTION,
+    images: [
+      {
+        url: OG_IMAGE_PATH,
+        width: 1200,
+        height: 630,
+        alt: OG_IMAGE_ALT,
+      },
+    ],
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: "FlowParse — Convert bank statements to Excel and CSV",
+    description: SITE_DESCRIPTION,
+    images: [OG_IMAGE_PATH],
+  },
+};
 
 const features = [
   {
@@ -113,7 +152,46 @@ export default async function LandingPage() {
   const plansHref = user ? "/settings#plans" : "/signup?next=%2Fsettings%23plans";
 
   return (
-    <div className="min-h-screen bg-white">
+    <>
+      <JsonLd
+        nodes={[
+          {
+            "@type": "Organization",
+            "@id": `${SITE_URL}/#organization`,
+            name: SITE_NAME,
+            url: SITE_URL,
+            logo: `${SITE_URL}/apple-icon.png`,
+            description:
+              "FlowParse converts PDF bank statements into reconciled Excel and CSV data.",
+          },
+          {
+            "@type": "WebSite",
+            "@id": `${SITE_URL}/#website`,
+            name: SITE_NAME,
+            url: SITE_URL,
+            inLanguage: "en",
+            publisher: { "@id": `${SITE_URL}/#organization` },
+            description: SITE_DESCRIPTION,
+          },
+          {
+            "@type": "SoftwareApplication",
+            "@id": `${SITE_URL}/#app`,
+            name: SITE_NAME,
+            url: SITE_URL,
+            applicationCategory: "FinanceApplication",
+            operatingSystem: "Web",
+            description: SITE_DESCRIPTION,
+            offers: {
+              "@type": "Offer",
+              price: "0",
+              priceCurrency: "USD",
+              description:
+                "Free plan with 3 processed pages per month. Paid plans start at $9 per month.",
+            },
+          },
+        ]}
+      />
+      <div className="min-h-screen bg-white">
       <header className="sticky top-0 z-40 border-b border-border/70 bg-white/85 backdrop-blur-md">
         <div className="mx-auto flex h-16 w-full max-w-7xl items-center justify-between gap-6 px-5 sm:px-8">
           <Logo imageClassName="h-8" />
@@ -137,6 +215,12 @@ export default async function LandingPage() {
             <a className="transition-colors hover:text-foreground" href="#faq">
               FAQ
             </a>
+            <Link className="transition-colors hover:text-foreground" href="/resources">
+              Resources
+            </Link>
+            <Link className="transition-colors hover:text-foreground" href="/banks">
+              Bank guides
+            </Link>
           </nav>
 
           <div className="flex items-center gap-2">
@@ -700,7 +784,7 @@ export default async function LandingPage() {
       </main>
 
       <footer className="border-t border-border">
-        <div className="mx-auto grid w-full max-w-7xl gap-10 px-5 py-14 sm:px-8 md:grid-cols-[1.5fr_1fr_1fr_1fr]">
+        <div className="mx-auto grid w-full max-w-7xl gap-10 px-5 py-14 sm:px-8 md:grid-cols-2 lg:grid-cols-[1.4fr_1fr_1fr_1fr_1fr]">
           <div>
             <Logo imageClassName="h-8" />
             <p className="mt-4 max-w-xs text-[12px] leading-6 text-muted-foreground">
@@ -727,12 +811,27 @@ export default async function LandingPage() {
 
           <div>
             <p className="text-[10.5px] font-semibold tracking-[0.02em] text-muted-foreground">
-              Learn
+              Convert
             </p>
             <ul className="mt-3.5 space-y-2.5 text-[12px] text-foreground/70">
+              <li><Link className="hover:text-foreground" href="/convert-bank-statement-pdf-to-excel">PDF to Excel</Link></li>
+              <li><Link className="hover:text-foreground" href="/convert-bank-statement-pdf-to-csv">PDF to CSV</Link></li>
+              <li><Link className="hover:text-foreground" href="/convert-scanned-bank-statement-to-excel">Scanned to Excel</Link></li>
+              <li><Link className="hover:text-foreground" href="/bank-statement-ocr">Bank statement OCR</Link></li>
+              <li><Link className="hover:text-foreground" href="/convert-bank-statements-to-spreadsheets">All converters</Link></li>
+            </ul>
+          </div>
+
+          <div>
+            <p className="text-[10.5px] font-semibold tracking-[0.02em] text-muted-foreground">
+              Resources
+            </p>
+            <ul className="mt-3.5 space-y-2.5 text-[12px] text-foreground/70">
+              <li><Link className="hover:text-foreground" href="/resources">Guides</Link></li>
+              <li><Link className="hover:text-foreground" href="/resources/how-to-convert-bank-statement-pdf-to-excel">PDF to Excel guide</Link></li>
+              <li><Link className="hover:text-foreground" href="/resources/excel-vs-csv-bank-statement-conversion">Excel vs CSV</Link></li>
+              <li><Link className="hover:text-foreground" href="/banks">Bank guides</Link></li>
               <li><a className="hover:text-foreground" href="#faq">FAQ</a></li>
-              <li><a className="hover:text-foreground" href="#security">Security</a></li>
-              <li><a className="hover:text-foreground" href="#upload">Upload demo</a></li>
             </ul>
           </div>
 
@@ -765,6 +864,7 @@ export default async function LandingPage() {
           </div>
         </div>
       </footer>
-    </div>
+      </div>
+    </>
   );
 }
