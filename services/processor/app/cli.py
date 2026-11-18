@@ -21,11 +21,15 @@ def main() -> None:
         ocr_enabled=not args.no_ocr,
         tesseract_cmd=args.tesseract,
     )
-    payload = json.dumps(result.to_json(), indent=2, ensure_ascii=False)
+    payload = result.to_json()
     if args.output:
-        args.output.write_text(payload, encoding="utf-8")
+        args.output.write_text(
+            json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8"
+        )
     else:
-        print(payload)
+        # ASCII escaping keeps the CLI usable on Windows terminals whose
+        # default code page cannot encode characters such as the minus sign.
+        print(json.dumps(payload, indent=2, ensure_ascii=True))
 
 
 if __name__ == "__main__":

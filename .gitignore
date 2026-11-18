@@ -50,3 +50,6 @@ services/processor/tests/fixtures/*.pdf
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+.vercel
+.env*

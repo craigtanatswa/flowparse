@@ -197,7 +197,7 @@ export default async function LandingPage() {
           <Logo imageClassName="h-8" />
 
           <nav
-            className="hidden items-center gap-7 text-[12.5px] font-medium text-muted-foreground md:flex"
+            className="hidden items-center gap-7 text-[12.5px] font-medium text-muted-foreground lg:flex"
             aria-label="Landing navigation"
           >
             <a className="transition-colors hover:text-foreground" href="#how-it-works">

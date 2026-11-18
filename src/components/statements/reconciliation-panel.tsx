@@ -66,7 +66,7 @@ export function ReconciliationPanel({
               </p>
               <p className="mt-1 text-[11.5px] leading-5 text-muted-foreground">
                 {validation.status === "verified"
-                  ? "The extracted ledger agrees with the statement balances and the running balance column."
+                  ? "The extracted ledger agrees with the available statement balances and the running balance column."
                   : validation.status === "mismatch"
                     ? "The totals do not line up with the statement endpoints. Check any highlighted rows or missing transactions."
                     : "The statement did not include both opening and closing balances, so the endpoint check cannot run."}

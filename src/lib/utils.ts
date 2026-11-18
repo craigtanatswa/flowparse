@@ -131,13 +131,64 @@ export function pluralize(count: number, singular: string, plural?: string): str
   return `${count} ${count === 1 ? singular : plural || `${singular}s`}`;
 }
 
-export function parseAmountInput(raw: string): number | null {
-  const cleaned = raw.trim().replace(/[£$€,\s]/g, "");
+/** Normalise a manually entered money string to a dot-decimal value.
+ *
+ * Accepts currency symbols, leading/trailing minus, parentheses, comma
+ * decimals (`1234,56`), Anglo grouping (`1,234.56`) and European grouping
+ * (`1.234,56`). A single dot is always treated as the decimal separator, so an
+ * ambiguous `1.234` is rejected by the caller's two-decimal check rather than
+ * being silently turned into 1234.
+ */
+export function normalizeAmountText(raw: string): string | null {
+  let cleaned = raw
+    .trim()
+    .replace(/(?:A|AU|C|CA|US|R)\$/gi, "")
+    .replace(/[£€¥₹$]/g, "")
+    .replace(/[\s']/g, "");
   if (!cleaned) return null;
-  const value = Number(cleaned);
-  if (!Number.isFinite(value)) return null;
-  if (Math.abs(value * 100 - Math.round(value * 100)) > 1e-6) return null;
-  return value;
+
+  let negative = false;
+  if (cleaned.startsWith("(") && cleaned.endsWith(")")) {
+    negative = true;
+    cleaned = cleaned.slice(1, -1);
+  }
+  if (cleaned.startsWith("-")) {
+    negative = true;
+    cleaned = cleaned.slice(1);
+  }
+  if (cleaned.endsWith("-")) {
+    negative = true;
+    cleaned = cleaned.slice(0, -1);
+  }
+
+  if (!/^[\d.,]+$/.test(cleaned)) return null;
+
+  if (cleaned.includes(",") && cleaned.includes(".")) {
+    if (cleaned.lastIndexOf(",") > cleaned.lastIndexOf(".")) {
+      cleaned = cleaned.replace(/\./g, "").replace(",", ".");
+    } else {
+      cleaned = cleaned.replace(/,/g, "");
+    }
+  } else if (cleaned.includes(",")) {
+    const lastComma = cleaned.lastIndexOf(",");
+    const decimalDigits = cleaned.length - lastComma - 1;
+    cleaned =
+      decimalDigits === 2
+        ? `${cleaned.slice(0, lastComma).replace(/,/g, "")}.${cleaned.slice(
+            lastComma + 1
+          )}`
+        : cleaned.replace(/,/g, "");
+  }
+
+  if (!/^\d{1,12}(\.\d{1,2})?$/.test(cleaned)) return null;
+  return `${negative ? "-" : ""}${cleaned}`;
+}
+
+export function parseAmountInput(raw: string): number | null {
+  const normalized = normalizeAmountText(raw);
+  if (normalized === null) return null;
+  const value = Number(normalized);
+  return Number.isFinite(value) ? value : null;
 }
 
 export function parseAmountFields(row: {

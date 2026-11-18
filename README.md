@@ -59,7 +59,7 @@ Supabase Postgres (RLS) ◄──── Supabase Auth
 ### Conversion flow
 
 1. The browser validates the PDF header and file size, then asks the Next.js API to create the statement.
-2. `POST /api/statements` verifies authentication, loads the user's profile and subscription plan, checks the monthly allowance from `usage_records`, inserts an ownership-scoped `uploaded_documents` row, and returns a signed upload URL for `{user_id}/{document_id}/original.pdf`.
+2. `POST /api/statements` verifies authentication, loads the user's profile and subscription plan, checks the monthly allowance from `usage_records`, calls the `create_statement` RPC to insert an ownership-scoped `uploaded_documents` row (the RPC derives the storage path from the authenticated owner and document id), and returns a signed upload URL for `{user_id}/{document_id}/original.pdf`.
 3. The browser uploads the PDF directly to the private `statements` bucket. The service-role key never reaches the browser.
 4. `POST /api/statements/:id/process` verifies ownership, calls the `queue_conversion` RPC to create the next `conversion_jobs` attempt, and queues work with the Python processor using a shared `X-Processor-Key`.
 5. The processor re-checks the job and document owner, atomically claims the queued job, downloads the PDF, and extracts rows. As each pipeline step starts, it persists a PII-free stage label and monotonic percentage; progress reporting failures never fail a readable extraction.
@@ -131,7 +131,9 @@ returned with `needs_review` and human-readable `review_reasons`. Potential
 duplicates are detected within the statement using date, normalised description,
 and amount; rows with two explicit different references are treated as distinct.
 Duplicate rows are kept and flagged, and the duplicate check appears in
-validation and in the extraction report.
+validation and in the extraction report. A row whose explicit currency differs
+from the statement currency is flagged, and the statement is not marked
+`verified` because the summary totals would mix currencies.
 
 OCR pages are scored per page. A mean confidence below `65%` marks the page as
 low confidence, flags every row from that page, and forces the extraction
@@ -217,13 +219,19 @@ services/processor/
     banks/                       Bank profiles, detection, generic fallback
   tests/
     fixtures/generate.py         Synthetic PDF generators
+    fixtures/financial_cases.py  Overdraft, grouping, multi-page and missing-data fixtures
     test_parser.py               End-to-end layout and error tests
+    test_financial_cases.py      Financial edge cases and reconciliation accuracy
     test_amounts.py              Amount/currency unit tests
     test_dates.py                Date parsing unit tests
     test_validation.py           Reconciliation and duplicate tests
     test_worker.py               Worker polling and processing-mode tests
     test_main.py                 API queued/embedded dispatch tests
-    test_supabase_rest.py        Queue claiming and race tests
+    test_supabase_rest.py        Queue claiming, races and storage-path ownership
+    test_database_security.py    RLS, RPC ownership and usage-limit integration tests
+tests/
+  export.test.ts                 CSV and XLSX export tests
+  finance.test.ts                Validation, reconciliation, plans and billing tests
 docs/
   adding-a-bank.md               Step-by-step bank profile guide
 ```
@@ -252,7 +260,7 @@ case with relaxed letter spacing to match the lowercase wordmark.
 
 ### Prerequisites
 
-- **Node.js 20+** and npm
+- **Node.js 22+** and npm
 - **Docker Desktop** for local Supabase
 - **Supabase CLI** (`npx supabase` works without a global install)
 - **Python 3.11/3.12**
@@ -405,7 +413,7 @@ python -m app.cli path/to/statement.pdf
 | `SUPABASE_SERVICE_ROLE_KEY` | Yes for billing | Server-only client used for customer linking and the webhook RPC; bypasses RLS, so never expose it |
 | `PROCESSOR_URL` | Yes for extraction | Base URL of the Python service. On Vercel this is injected by the `app` -> `processor` service binding; set it manually only for local development |
 | `PROCESSOR_API_KEY` | Yes for extraction | Shared secret sent as `X-Processor-Key` |
-| `NEXT_PUBLIC_SITE_URL` | Recommended | Canonical URL used in auth email redirects and checkout return URLs |
+| `NEXT_PUBLIC_SITE_URL` | Recommended | Canonical URL used in auth email redirects, checkout return URLs and SEO. Set it to `https://www.flowparse.app` for Production; Next inlines `NEXT_PUBLIC_*` at build time, so change it before redeploying. The code fallback is `https://www.flowparse.app`. |
 | `DODO_PAYMENTS_ENVIRONMENT` | No | `test_mode` (default) or `live_mode`; any other value falls back to test mode |
 | `DODO_PAYMENTS_API_KEY` | Yes for billing | Server-side Dodo API key for the selected environment |
 | `DODO_PAYMENTS_WEBHOOK_KEY` | Yes for billing | Signing secret used to verify the `webhook-signature` header |
@@ -465,6 +473,8 @@ The backend is defined by the SQL migrations in `supabase/migrations/`. The orig
 
 - RLS is enabled on `profiles`, `conversion_jobs`, `uploaded_documents`, `extracted_transactions`, and `usage_records`. The plan catalogue is intentionally world-readable.
 - Every ownership policy compares `auth.uid()` with the row owner. Cross-user reads, edits, exports, PDF access, processing, and deletion return `404`.
+- Clients can read their own statement rows, but cannot insert, update, or delete them directly. `create_statement` and `delete_statement` are the only write paths; `create_statement` builds the storage path from `auth.uid()` and the new document id, and a `NOT VALID` check constraint rejects any row whose path points outside its owner's folder.
+- The processor also verifies that a document's storage path starts with the document owner's id before downloading it with the service role, so a database mistake cannot turn into a cross-tenant read.
 - `profiles` exposes only `select` and column-scoped `update (display_name, company)` to authenticated clients. `plan_id` cannot be changed from the browser; only the signature-verified webhook path can change entitlements.
 - `billing_subscriptions` is readable by its owner and writable only by the service role. Clients cannot insert a subscription, change a status, or grant themselves a plan.
 - `billing_webhook_events` is service-role only. `apply_billing_event` is a `SECURITY DEFINER` RPC executable only by `service_role`; it rejects unknown plans and ignores duplicate `webhook-id` deliveries.
@@ -474,10 +484,10 @@ The backend is defined by the SQL migrations in `supabase/migrations/`. The orig
 - Checkout and the customer portal both use the Dodo customer linked to the signed-in account. Card details are entered in Dodo's hosted checkout and never reach FlowParse.
 - A delayed or superseded subscription event cannot overwrite the subscription that currently grants access; the database function and the sync layer both enforce this rule.
 - Clients can read only their own `conversion_jobs` and `usage_records`; both tables are server-write-only.
-- Transaction inserts require `auth.uid() = user_id`, a document owned by the same user, and a `job_id` that belongs to that document when present.
+- Transaction inserts and updates require `auth.uid() = user_id`, a document owned by the same user, and (when present) a `job_id` that belongs to that same document and user.
 - `queue_conversion` and `fail_conversion` are `SECURITY DEFINER` RPCs for authenticated callers. They verify ownership, lock the document/job row, refuse to overwrite completed data, and create or fail the next attempt.
 - The processor uses the service-role key and calls `save_extraction_result`, `mark_conversion_failed`, and `update_conversion_progress`. Those functions are not executable by `anon` or `authenticated`.
-- The inline editor calls `apply_transaction_changes`, a security-invoker RPC that runs under the user's RLS context.
+- The inline editor calls `apply_transaction_changes`, a security-definer RPC that validates `auth.uid()`, document ownership, and row ownership on every operation.
 - Usage counters are maintained by triggers on document insert/delete and terminal status changes, then backfilled from existing data by the migration. Clients cannot write usage directly.
 - PDFs live in the private `statements` bucket at `{user_id}/{document_id}/original.pdf`. Storage policies restrict each object to the owning user's folder.
 - The browser uploads with a short-lived signed URL and never receives the service-role key. Original PDFs and exports are streamed only by authenticated Next.js routes.
@@ -485,6 +495,7 @@ The backend is defined by the SQL migrations in `supabase/migrations/`. The orig
 - CSV free-text cells are neutralized against spreadsheet formula injection.
 - Uploads are limited to `application/pdf`; the storage bucket enforces the same MIME type and a 25 MiB cap. The plan's `file_size_mb` is also enforced by `POST /api/statements`.
 - API responses use `Cache-Control: no-store` or `private, no-store`.
+- Every response sets a Content Security Policy, HSTS, `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`, a strict referrer policy and a restrictive permissions policy. The CSP allows only the app origin and the configured Supabase origin for network calls.
 - The processor's service-role key exists only in its runtime environment; never prefix it with `NEXT_PUBLIC_`.
 
 ---
@@ -531,12 +542,15 @@ Processing limits remain: 100 pages per PDF, OCR enabled by default (English), a
 `usage_records` is maintained by database triggers:
 
 - a document insert increments `documents_uploaded` and `storage_bytes`;
-- a terminal status change increments `conversions_completed` or `conversions_failed`; a completed or partial conversion adds the document's page count to `pages_processed`;
-- deleting a document decrements `documents_uploaded` and `storage_bytes`, and removes its processed pages.
+- entering a completed or partial terminal state increments `conversions_completed` and adds the document's page count to the current month's `pages_processed`;
+- entering a failed state increments `conversions_failed`;
+- deleting a document decrements `documents_uploaded` and `storage_bytes`. Processed pages are **not** refunded: otherwise a user could process unlimited pages by uploading and deleting the same statement.
 
-The migration backfills usage from existing documents. Clients can read their own monthly record but cannot write it, and the processor does not update usage directly.
+The migration backfills usage from existing data. Clients can read their own monthly record but cannot write it, and the processor does not update usage directly.
 
-The allowance resets on the first day of each calendar month, not on the subscription anniversary. The check is a pre-insert read, so two simultaneous uploads at the exact limit could exceed it by a page or two; move the check and insert into a single transactional RPC if strict enforcement is required.
+**Strict page cap.** `save_extraction_result` locks the current month's usage row, reads the plan limit, and refuses to save a completed or partial extraction when `pages_processed + page_count` would exceed the plan. The document is marked failed with an upgrade message and no rows are saved. This closes the previous window where a single 100-page PDF could be processed on the Free plan (3 pages), and where two concurrent extractions could both pass a pre-insert check. The page count is charged to the month in which processing finishes, not the month the file was uploaded. The allowance resets on the first day of each calendar month (UTC), not on the subscription anniversary.
+
+The upload-time check is still a pre-check for user experience. The database guard is authoritative.
 
 ### Billing (Dodo Payments)
 
@@ -578,12 +592,13 @@ Because the webhook is idempotent, a retried delivery cannot apply a plan twice 
 
 **Test mode.** `DODO_PAYMENTS_ENVIRONMENT` defaults to `test_mode`, and any value other than `live_mode` keeps test mode. The Dodo client is constructed with the matching environment, and product ids are resolved from the matching `_TEST`/`_LIVE` variables, so test and live configuration cannot be mixed by accident. Use Dodo's test cards (`4242 4242 4242 4242` for success, `4000 0000 0000 0341` for a decline) and the webhook relay shown above to exercise the lifecycle locally.
 
-**Live mode.** FlowParse is deployed at `https://flowparse.vercel.app`, the four live products in the table above exist in the live business, and the live webhook endpoint `ep_3MFcC1CJgwhvyrRGwclbiRZAGAl` is registered for `https://flowparse.vercel.app/api/webhooks/dodo`. Switching to live is a configuration change, not a code change:
+**Live mode.** FlowParse is deployed at `https://www.flowparse.app`, the four live products in the table above exist in the live business, and the live webhook endpoint `ep_3MFcC1CJgwhvyrRGwclbiRZAGAl` must be registered for `https://www.flowparse.app/api/webhooks/dodo`. The legacy `https://flowparse.vercel.app` host is kept as a canonical redirect for page routes, but the Dodo endpoint, Supabase Auth URLs and `NEXT_PUBLIC_SITE_URL` must all use the official www domain. Switching to live is a configuration change, not a code change:
 
 1. Keep the app on a public HTTPS host, because Dodo cannot deliver live webhooks to `localhost`.
-2. Keep the live webhook endpoint registered for the subscription events and its signing secret in the host's secret store.
-3. Set `DODO_PAYMENTS_ENVIRONMENT=live_mode`, the live API key, the live webhook secret, the four `_LIVE` product ids, and `NEXT_PUBLIC_SITE_URL=https://flowparse.vercel.app` for Production only. The site URL controls checkout return links and auth email redirects, so it must be the public origin rather than `localhost`. Keep the test values for development and preview environments.
-4. Confirm the deployment reports a live-mode Dodo client, that the four `_LIVE` ids resolve, and that an unsigned webhook is rejected with `401`.
+2. Register the live webhook for `https://www.flowparse.app/api/webhooks/dodo` and keep its signing secret in the host's secret store. Replace any endpoint still pointing at `flowparse.vercel.app`.
+3. Set `DODO_PAYMENTS_ENVIRONMENT=live_mode`, the live API key, the live webhook secret, the four `_LIVE` product ids, and `NEXT_PUBLIC_SITE_URL=https://www.flowparse.app` for Production only. The site URL controls checkout return links and auth email redirects, so it must be the public origin rather than `localhost`. Keep the test values for development and preview environments.
+4. In Supabase Auth, set the site URL to `https://www.flowparse.app` and add `https://www.flowparse.app/auth/confirm` to the redirect allow list.
+5. Confirm the deployment reports a live-mode Dodo client, that the four `_LIVE` ids resolve, and that an unsigned webhook is rejected with `401`.
 
 Never put live credentials in a committed file or a client bundle, and never reuse test product ids with live credentials. A live checkout charges a real card, so it is a customer action; validate the flow with a real low-value purchase only when you are ready to take payments.
 
@@ -607,7 +622,7 @@ The public marketing surface is built from typed content modules rather than han
 
 Technical SEO lives in `src/lib/seo/` and `src/components/seo/`:
 
-- `site.ts` holds the canonical origin, site name and absolute-URL helper. `NEXT_PUBLIC_SITE_URL` must be the public production origin; the fallback is the Vercel domain.
+- `site.ts` holds the canonical origin, site name and absolute-URL helper. `NEXT_PUBLIC_SITE_URL` must be the public production origin; the fallback is `https://www.flowparse.app`.
 - `metadata.ts` builds per-page canonical, Open Graph and Twitter metadata.
 - Each landing page, article and bank guide emits JSON-LD: `WebPage`/`BlogPosting`, `BreadcrumbList` and `FAQPage`. The home page emits `Organization`, `WebSite` and `SoftwareApplication`.
 - The marketing shell is static: it does not read cookies, so content pages are prerendered and cached.
@@ -646,16 +661,37 @@ The repository ships with synthetic fixtures and automated parser/unit tests. Fi
 # Web checks
 npx tsc --noEmit
 npm run lint
+npm run test:web
 npm run build
 
-# Python checks
+# Responsive public/auth pages (requires `npm run dev` and Chrome)
+npm run test:responsive
+
+# Processor checks
 cd services/processor
 python -m pytest -q
 ```
 
-The processor suite currently contains 47 tests covering:
+The web suite (`npm run test:web`, 42 tests) covers:
+
+- CSV header, ISO dates, dot-decimal amounts, negative balances, per-row currencies, empty exports, and formula-injection neutralisation;
+- XLSX summary and transaction sheets, real date cells, numeric amounts, review notes, and formula-like descriptions stored as plain strings;
+- live reconciliation totals, negative balances, incomplete rows, and amount parsing (including European, grouped and parenthesised manual input);
+- transaction and upload Zod validation;
+- auth error mapping that avoids account-existence disclosure and explains rate limits and confirmation failures;
+- statement create/delete API routes: authentication, malformed input, RPC failure, signed-URL failure cleanup, and storage removal;
+- canonical site URL fallback to `https://www.flowparse.app`, trailing-slash handling and absolute URLs;
+- plan limits, UTC month boundaries, billing entitlement rules, and safe post-login redirects.
+
+The processor suite covers:
 
 - digital, US, European, value-date/reference, inline value-date, year-end yearless dates, headerless, duplicate, unsupported, and scanned layouts;
+- overdrawn balances, parenthesis negatives, separate `DR`/`CR` markers, grouped integers, space-grouped European amounts, Swiss apostrophes, and Indian grouping;
+- reversed debit/credit columns, multi-page statements without repeated headers, and missing transactions that must produce a reconciliation mismatch;
+- statements with no stated balances, which must return `insufficient_data` rather than a false `verified` status;
+- a transaction description such as `PAYMENT TO WWW.AMAZON.COM` or `TRANSFER TO CLOSING BALANCE ACCOUNT`, which must not be dropped or mistaken for a balance endpoint;
+- separate ISO currency codes next to amounts, a bare `$` on a non-USD statement, and duplicate detection that treats different currencies as distinct;
+- mixed-currency totals that are kept and flagged but never reported as verified;
 - queue claiming, claim races, worker recovery, and queued/embedded API dispatch;
 - date-order inference, year-end date alignment, and dashed/named month parsing;
 - international amount grouping, currency symbols, ISO prefixes/suffixes, and ambiguous `$`;
@@ -663,20 +699,38 @@ The processor suite currently contains 47 tests covering:
 - low-OCR-confidence flags and forced `partial` status;
 - bank profile detection;
 - reconciliation, duplicate detection, and validation checks;
-- monotonic real progress stages and tolerance of progress-sink failures.
+- monotonic real progress stages and tolerance of progress-sink failures;
+- storage-path ownership checks that prevent the processor from reading outside the document owner's folder.
 
-The end-to-end smoke test uploads a four-file batch (two digital, one scanned, one unsupported), verifies live stage/percentage progress, retries the failed file twice, confirms repaired retries complete without duplicate rows, checks completed jobs return `409`, edits rows, and downloads both CSV and XLSX.
+The responsive suite (`npm run test:responsive`, 51 checks) loads the landing page, auth pages, bank index/detail, resources index/article and a solution page at 390, 640, 768, 1024 and 1440 px. It fails on horizontal page overflow (ignoring intentional scroll containers), console errors, failed navigations, or a broken mobile menu. It uses an installed Chrome through `playwright-core`; set `PLAYWRIGHT_CHROME_PATH` if Chrome is not on the default channel.
 
-A backend security test signs up two isolated users and verifies:
+The database integration suite (`services/processor/tests/test_database_security.py`, 15 tests) runs against a disposable migrated Postgres/Supabase database and verifies:
 
-- profiles are created automatically on signup and start on the Free plan;
-- users can update their own `display_name` but cannot change `plan_id`;
-- cross-user profile reads and updates are blocked;
-- the plan catalogue is readable and the private bucket is not;
-- one user cannot read, delete, or process another user's document through RLS or the API;
-- `conversion_jobs` and `usage_records` are owner-readable and server-write-only;
-- transaction inserts cannot target another user's document or spoof `user_id`;
-- storage objects require the owner or a signed URL, and a signed URL returns the exact file bytes.
+- statement creation and deletion are RPC-only; direct insert/update/delete is denied;
+- a client cannot forge status, page count, validation, or a storage path;
+- cross-user document, profile, job, and usage reads/writes are blocked;
+- storage objects are readable only from the owner's folder, and a client cannot upload into another user's folder;
+- transaction rows cannot reference another user's job or document;
+- the editor RPC is owner-only and does not report a derived opening balance or mixed-currency totals as verified;
+- a 100-page statement is rejected on the Free plan before any rows are saved;
+- the page cap is cumulative, charged to the processing month, and not refunded on delete;
+- a late failure or duplicate save cannot overwrite a completed extraction.
+
+Run it against a local Supabase database after `npx supabase db reset`:
+
+```bash
+cd services/processor
+FLOWPARSE_TEST_DATABASE_URL="postgresql://postgres:postgres@127.0.0.1:56322/postgres" python -m pytest -q tests/test_database_security.py
+```
+
+In PowerShell:
+
+```powershell
+$env:FLOWPARSE_TEST_DATABASE_URL="postgresql://postgres:postgres@127.0.0.1:56322/postgres"
+python -m pytest -q tests/test_database_security.py
+```
+
+The test uses two fixed test users, deletes their rows before and after each test, and refuses to run unless `FLOWPARSE_TEST_DATABASE_URL` is set. Do not point it at production.
 
 The billing lifecycle was exercised end-to-end in Dodo test mode with the webhook relay:
 
@@ -702,18 +756,21 @@ Manual regression checklist:
 
 1. Sign up, sign out, sign in, request a reset email, and choose a new password.
 2. Upload a digital PDF; verify it reaches **Extracted** with the expected row count, value dates, references, currencies, and a reconciled balance.
-3. Upload a scanned PDF and verify OCR is used, confidence is at most **medium**, and low-confidence pages produce flagged rows and a **Needs review** status.
-4. Upload a statement containing duplicate rows and verify both rows are kept, flagged, and counted in the duplicate check.
-5. Edit a description, value date, and row currency in the ledger, save, refresh, and confirm they persisted.
-6. Add a manual row, save, delete it, save again, and confirm the row count returns.
-7. Upload a batch containing valid, scanned, and unsupported PDFs; confirm each shows a real stage and percentage, the unsupported file ends **Failed** with a clear error, retry is available inline, and retrying does not duplicate rows.
-8. Retry a completed conversion and confirm the API returns `409` instead of overwriting reviewed data.
-9. Download XLSX and CSV; verify the files open, include value dates and per-row currencies, and reconcile with the summary.
-10. Sign in as a second account and confirm the first account's statement pages/API/files/exports all return `404`.
-11. Confirm the dashboard, history, and settings counts match the database.
-12. Start a checkout, cancel it, and confirm the settings banner appears and the plan did not change.
-13. Complete a test-mode checkout with `4242 4242 4242 4242`, confirm the success page waits for the webhook, then confirm Settings shows the new plan, page allowance, and renewal date. Open the customer portal and confirm the invoice is listed.
-14. Check the landing and authenticated pages at desktop and mobile widths.
+3. Upload an overdrawn statement (negative opening/closing balances and parenthesised or `DR` balances); verify the signs are preserved and the statement reconciles.
+4. Upload a statement with whole/space-grouped amounts and a statement with no printed balances; verify the amounts parse and the no-balance result shows **Not verifiable** rather than a false **Balanced**.
+5. Upload a scanned PDF and verify OCR is used, confidence is at most **medium**, and low-confidence pages produce flagged rows and a **Needs review** status.
+6. Upload a statement containing duplicate rows and verify both rows are kept, flagged, and counted in the duplicate check.
+7. Edit a description, value date, and row currency in the ledger, save, refresh, and confirm they persisted.
+8. Add a manual row, save, delete it, save again, and confirm the row count returns.
+9. Upload a batch containing valid, scanned, and unsupported PDFs; confirm each shows a real stage and percentage, the unsupported file ends **Failed** with a clear error, retry is available inline, and retrying does not duplicate rows.
+10. Retry a completed conversion and confirm the API returns `409` instead of overwriting reviewed data.
+11. Download XLSX and CSV; verify the files open, include value dates and per-row currencies, and reconcile with the summary.
+12. Sign in as a second account and confirm the first account's statement pages/API/files/exports all return `404`.
+13. Confirm the dashboard, history, and settings counts match the database, including the current-month page count after processing a statement uploaded last month.
+14. On the Free plan, upload a 100-page PDF and confirm it fails with the monthly allowance message before any rows are saved. Delete a completed statement and confirm the processed pages are not refunded.
+15. Start a checkout, cancel it, and confirm the settings banner appears and the plan did not change.
+16. Complete a test-mode checkout with `4242 4242 4242 4242`, confirm the success page waits for the webhook, then confirm Settings shows the new plan, page allowance, and renewal date. Open the customer portal and confirm the invoice is listed.
+17. Check the landing, auth, dashboard, history, settings, and statement workspace at 390, 640, 768, 1024, and 1440 px widths.
 
 Lighthouse checks were used during development to bring the landing, auth, dashboard, history, settings, and statement workspace pages to **100 accessibility, 100 best practices, and 100 SEO**.
 
@@ -730,19 +787,23 @@ npx supabase link --project-ref <project-ref>
 npx supabase db push
 ```
 
-In **Authentication → URL Configuration**, set the site URL to your production app URL and add:
+The latest migration (`20260106000000_security_and_usage_hardening.sql`) moves statement creation/deletion behind ownership-checked RPCs, tightens transaction RLS, adds the storage-path and currency checks, and enforces the monthly page cap at save time. Apply it before deploying the matching application build. Like the earlier migrations, it is intended to run once through the normal `db push` flow.
+
+In **Authentication → URL Configuration**, set the site URL to `https://www.flowparse.app` and add:
 
 ```text
-https://your-app.example.com/auth/confirm
+https://www.flowparse.app/auth/confirm
 ```
 
-Set up production SMTP for auth emails; local Mailpit is development-only. The migrations create the private bucket, MIME restriction, storage policies, profile trigger, plan catalogue, usage triggers, conversion jobs, billing mirror and webhook receipt tables, and all RPCs. Review the bucket size cap and the app's `MAX_FILE_BYTES` together if you change limits.
+Set up production SMTP for auth emails; local Mailpit is development-only. The local `supabase/config.toml` disables email confirmation for convenience; enable it in the hosted project before taking real users, and keep the password minimum at 8 characters. The migrations create the private bucket, MIME restriction, storage policies, profile trigger, plan catalogue, usage triggers, conversion jobs, billing mirror and webhook receipt tables, and all RPCs. Review the bucket size cap and the app's `MAX_FILE_BYTES` together if you change limits.
 
 After `db push`, confirm that `subscription_plans` contains the seeded `free` plan and that `profiles` has a row for every existing auth user. New signups create their profile automatically through the `on_auth_user_created` trigger.
 
-If you use the optional `NEXT_PUBLIC_SITE_URL`, set it to the canonical HTTPS origin. The `/auth/confirm` route also derives the request origin from forwarded headers so cookie exchange works on the same host.
+Set `NEXT_PUBLIC_SITE_URL=https://www.flowparse.app` for Production. Next inlines `NEXT_PUBLIC_*` values at build time, so set it before the production build and redeploy after changing it. The `/auth/confirm` route also derives the request origin from forwarded headers so cookie exchange works on the same host, but the explicit production origin is what keeps auth emails, canonical URLs and checkout return links on the official domain.
 
 ### 2. Vercel project
+
+Use `www.flowparse.app` as the primary production domain and keep `flowparse.app` redirecting to it (Vercel already returns a 308 from the apex). The deployment host `flowparse.vercel.app` also remains reachable; the middleware sends its page routes to `https://www.flowparse.app` while leaving `/api/` and `/auth/` paths on the alias so an in-flight webhook or confirmation link is not broken during the change. Update the Dodo webhook endpoint to the www domain as soon as the new deployment is live.
 
 This repository deploys as one Vercel project with two services and one daemon,
 defined in `vercel.json`:
@@ -792,6 +853,8 @@ Configure these environment variables for the project:
 - `DODO_PRODUCT_STARTER_TEST` / `DODO_PRODUCT_STARTER_LIVE`
 - `DODO_PRODUCT_PRO_TEST` / `DODO_PRODUCT_PRO_LIVE`
 - `DODO_PRODUCT_BUSINESS_TEST` / `DODO_PRODUCT_BUSINESS_LIVE`
+
+Set the project's Node.js version to **22** (the repository declares `engines.node >= 22`). Node 20 is no longer supported by the installed Supabase SDK.
 
 `PROCESSOR_API_KEY` must be identical for the app and processor. Set the shared
 values for Production, Preview, and Development. `NEXT_PUBLIC_*` values are

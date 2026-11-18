@@ -13,11 +13,12 @@ export async function GET(_request: Request, { params }: RouteContext) {
   const id = parseUuid((await params).id);
   if (!id) return jsonError("Invalid statement id.");
 
-  const { supabase } = context;
+  const { supabase, user } = context;
   const { data: statement, error: statementError } = await supabase
     .from("uploaded_documents")
     .select("*")
     .eq("id", id)
+    .eq("user_id", user.id)
     .maybeSingle();
 
   if (statementError) {
@@ -30,6 +31,7 @@ export async function GET(_request: Request, { params }: RouteContext) {
     .from("extracted_transactions")
     .select("*")
     .eq("document_id", id)
+    .eq("user_id", user.id)
     .order("sort_index", { ascending: true })
     .order("created_at", { ascending: true });
 
@@ -52,24 +54,15 @@ export async function DELETE(_request: Request, { params }: RouteContext) {
   if (!id) return jsonError("Invalid statement id.");
 
   const { supabase } = context;
-  const { data: statement, error: loadError } = await supabase
-    .from("uploaded_documents")
-    .select("id,storage_path")
-    .eq("id", id)
-    .maybeSingle();
-
-  if (loadError) {
-    logServerError("Could not load statement for deletion", loadError);
-    return jsonError("Could not delete this statement.", 500);
-  }
-  if (!statement) return jsonError("Statement not found.", 404);
-
-  const { error: deleteError } = await supabase
-    .from("uploaded_documents")
-    .delete()
-    .eq("id", id);
+  const { data: storagePath, error: deleteError } = await supabase.rpc(
+    "delete_statement",
+    { p_document_id: id }
+  );
 
   if (deleteError) {
+    if (/Document not found/i.test(deleteError.message)) {
+      return jsonError("Statement not found.", 404);
+    }
     logServerError("Could not delete statement", deleteError);
     return jsonError("Could not delete this statement. Please try again.", 500);
   }
@@ -77,12 +70,14 @@ export async function DELETE(_request: Request, { params }: RouteContext) {
   // The database row is the source of truth. If storage cleanup fails we keep
   // the deletion successful; the object remains private and unreachable from
   // the app, and can be removed by a maintenance job.
-  const { error: storageError } = await supabase.storage
-    .from(STATEMENTS_BUCKET)
-    .remove([statement.storage_path]);
+  if (storagePath) {
+    const { error: storageError } = await supabase.storage
+      .from(STATEMENTS_BUCKET)
+      .remove([storagePath]);
 
-  if (storageError) {
-    logServerError("Could not remove statement file from storage", storageError);
+    if (storageError) {
+      logServerError("Could not remove statement file from storage", storageError);
+    }
   }
 
   return new NextResponse(null, { status: 204 });

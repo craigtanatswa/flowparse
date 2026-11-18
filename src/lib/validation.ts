@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 import { MAX_FILE_BYTES } from "@/lib/constants";
+import { normalizeAmountText } from "@/lib/utils";
 
 const uuidPattern =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -22,10 +23,7 @@ export const uploadCreateSchema = z.object({
 const nullableAmount = z
   .union([z.string(), z.null()])
   .optional()
-  .transform((value) => {
-    const cleaned = (value ?? "").trim().replace(/[£$€,\s]/g, "");
-    return cleaned === "" ? null : cleaned;
-  })
+  .transform((value) => normalizeAmountText(value ?? ""))
   .refine((value) => value === null || /^-?\d{1,12}(\.\d{1,2})?$/.test(value), {
     message: "Amounts must be valid numbers with no more than two decimal places.",
   });

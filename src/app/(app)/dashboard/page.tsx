@@ -23,7 +23,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { loadAccountData } from "@/lib/account";
 import { requireUser } from "@/lib/auth";
 import { readStatus, type StatementRecord } from "@/lib/domain";
-import { currentMonthStartIso, nextAllowanceReset } from "@/lib/plans";
+import { currentMonthStartDate, nextAllowanceReset } from "@/lib/plans";
 import {
   cn,
   formatDateTime,
@@ -117,7 +117,7 @@ function RecentStatement({ statement }: { statement: StatementRecord }) {
 
 export default async function DashboardPage() {
   const { user, supabase } = await requireUser();
-  const monthStart = currentMonthStartIso();
+  const monthStart = currentMonthStartDate();
 
   const [
     account,
@@ -151,7 +151,7 @@ export default async function DashboardPage() {
     supabase
       .from("uploaded_documents")
       .select("page_count")
-      .gte("created_at", monthStart)
+      .eq("pages_charged_period", monthStart)
       .in("status", ["completed", "partial"]),
   ]);
 

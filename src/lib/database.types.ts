@@ -328,6 +328,7 @@ export type Database = {
           mime_type: string;
           opening_balance: number | null;
           page_count: number | null;
+          pages_charged_period: string | null;
           processed_at: string | null;
           processing_stage: string | null;
           progress_percent: number | null;
@@ -357,6 +358,7 @@ export type Database = {
           mime_type?: string;
           opening_balance?: number | null;
           page_count?: number | null;
+          pages_charged_period?: string | null;
           processed_at?: string | null;
           processing_stage?: string | null;
           progress_percent?: number | null;
@@ -385,6 +387,7 @@ export type Database = {
           mime_type?: string;
           opening_balance?: number | null;
           page_count?: number | null;
+          pages_charged_period?: string | null;
           processed_at?: string | null;
           processing_stage?: string | null;
           progress_percent?: number | null;
@@ -492,6 +495,18 @@ export type Database = {
           isOneToOne: false;
           isSetofReturn: true;
         };
+      };
+      create_statement: {
+        Args: { p_file_name: string; p_file_size: number };
+        Returns: {
+          file_name: string;
+          id: string;
+          storage_path: string;
+        }[];
+      };
+      delete_statement: {
+        Args: { p_document_id: string };
+        Returns: string;
       };
       fail_conversion: {
         Args: { p_job_id: string; p_message: string };

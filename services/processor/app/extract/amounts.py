@@ -28,14 +28,23 @@ _CURRENCY_CODES = {"GBP", "USD", "EUR", "CAD", "AUD", "NZD", "JPY", "INR", "CHF"
 _AMOUNT_RE = re.compile(
     r"^(?P<open>\()?(?P<sign>[-+−])?"
     r"(?P<currency>A\$|AU\$|C\$|CA\$|US\$|R\$|[$£€¥₹]|GBP|USD|EUR|CAD|AUD|NZD|JPY|INR|CHF|ZAR|SGD|HKD)?"
-    r"(?P<number>\d[\d.,]*\d|\d)(?P<close>\))?(?P<trail>[-+−])?"
+    r"(?P<number>\d[\d.,']*\d|\d)(?P<close>\))?(?P<trail>[-+−])?"
     r"(?P<marker>CR|DR)?(?P<suffix>GBP|USD|EUR|CAD|AUD|NZD|JPY|INR|CHF|ZAR|SGD|HKD)?$",
     re.IGNORECASE,
 )
 
 
 def _normalise_number(raw: str) -> Decimal | None:
-    value = raw.strip().replace(" ", "")
+    # Normalise thousands separators that survive as characters inside a word
+    # (non-breaking, narrow, thin spaces and Swiss apostrophes).
+    value = (
+        raw.strip()
+        .replace(" ", "")
+        .replace("\u00a0", "")
+        .replace("\u202f", "")
+        .replace("\u2009", "")
+        .replace("'", "")
+    )
     if not value:
         return None
 
@@ -52,6 +61,18 @@ def _normalise_number(raw: str) -> Decimal | None:
     elif re.fullmatch(r"\d+,\d{2}", value):
         value = value.replace(",", ".")
     elif re.fullmatch(r"\d+\.\d{2}", value):
+        pass
+    # Whole amounts with explicit grouping: 1,234 / 1.234 / 10,00,000.
+    # A bare ungrouped integer is still rejected by parse_amount_word unless
+    # it carries a currency symbol or ISO code.
+    elif re.fullmatch(r"\d{1,3}(?:,\d{3})+", value):
+        value = value.replace(",", "")
+    elif re.fullmatch(r"\d{1,3}(?:\.\d{3})+", value):
+        value = value.replace(".", "")
+    elif re.fullmatch(r"\d{1,2}(?:,\d{2})+,\d{3}", value):
+        value = value.replace(",", "")
+    # 1234 with a currency symbol/code.
+    elif re.fullmatch(r"\d+", value):
         pass
     else:
         return None
@@ -81,7 +102,7 @@ def _currency_for_token(prefix: str | None, suffix: str | None) -> str | None:
 
 
 def parse_amount_word(word: Word) -> AmountToken | None:
-    text = word.text.strip().replace("\u00a0", "")
+    text = word.text.strip().replace("\u00a0", "").replace("\u202f", "").replace("\u2009", "")
     if not text:
         return None
 
@@ -99,7 +120,15 @@ def parse_amount_word(word: Word) -> AmountToken | None:
     has_currency = bool(prefix or suffix)
     number = match.group("number")
     has_decimals = bool(re.search(r"[.,]\d{2}$", number))
-    if not has_currency and not has_decimals:
+    has_grouping = bool(
+        re.fullmatch(
+            r"\d{1,3}(?:[.,]\d{3})+"
+            r"|\d{1,2}(?:,\d{2})+,\d{3}"
+            r"|\d{1,3}(?:'\d{3})+",
+            number,
+        )
+    )
+    if not has_currency and not has_decimals and not has_grouping:
         return None
 
     value = _normalise_number(number)
@@ -156,6 +185,28 @@ def detect_currency(text: str) -> tuple[str | None, bool]:
     if "GBP" in unique and "USD" not in unique and "AUD" not in unique and "CAD" not in unique:
         return "GBP", False
     return unique[0], True
+
+
+def signed_value(token: AmountToken) -> Decimal:
+    """Return the token amount as printed: debits/overdrafts keep their sign."""
+    return -token.value if token.negative else token.value
+
+
+def standalone_currency(text: str) -> str | None:
+    """Resolve a currency word that is printed separately from its amount.
+
+    A bare ``$`` is deliberately left unresolved because it could be USD, CAD,
+    AUD or several other currencies. The caller keeps the statement currency and
+    can flag the row instead of guessing.
+    """
+    cleaned = text.strip(".,:;()[]").upper()
+    if not cleaned:
+        return None
+    if cleaned in _CURRENCY_CODES:
+        return cleaned
+    if cleaned in _CURRENCY_SYMBOLS and cleaned != "$":
+        return _CURRENCY_SYMBOLS[cleaned]
+    return None
 
 
 def is_balance_label(text: str) -> bool:

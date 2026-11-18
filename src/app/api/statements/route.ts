@@ -4,7 +4,7 @@ import { loadAccountData } from "@/lib/account";
 import { getApiContext, jsonError, sanitizeFileName } from "@/lib/api";
 import { STATEMENTS_BUCKET } from "@/lib/constants";
 import {
-  currentMonthStartIso,
+  currentMonthStartDate,
   nextAllowanceReset,
   planFileSizeBytes,
   planLimitReached,
@@ -47,7 +47,7 @@ export async function POST(request: Request) {
     const { data: documents, error: usageError } = await supabase
       .from("uploaded_documents")
       .select("page_count")
-      .gte("created_at", currentMonthStartIso())
+      .eq("pages_charged_period", currentMonthStartDate())
       .in("status", ["completed", "partial"]);
 
     if (usageError) {
@@ -71,32 +71,30 @@ export async function POST(request: Request) {
     );
   }
 
-  const statementId = crypto.randomUUID();
   const fileName = sanitizeFileName(parsed.data.fileName);
-  const storagePath = `${user.id}/${statementId}/original.pdf`;
 
-  const { error: insertError } = await supabase.from("uploaded_documents").insert({
-    id: statementId,
-    user_id: user.id,
-    file_name: fileName,
-    storage_path: storagePath,
-    file_size: parsed.data.fileSize,
-    mime_type: "application/pdf",
-    status: "uploaded",
-  });
+  const { data: created, error: insertError } = await supabase.rpc(
+    "create_statement",
+    {
+      p_file_name: fileName,
+      p_file_size: parsed.data.fileSize,
+    }
+  );
 
-  if (insertError) {
+  const statement = Array.isArray(created) ? created[0] : created;
+
+  if (insertError || !statement) {
     logServerError("Could not create statement row", insertError);
     return jsonError("Could not create your upload. Please try again.", 500);
   }
 
   const { data: signedUpload, error: signError } = await supabase.storage
     .from(STATEMENTS_BUCKET)
-    .createSignedUploadUrl(storagePath);
+    .createSignedUploadUrl(statement.storage_path);
 
   if (signError || !signedUpload) {
     logServerError("Could not create signed upload URL", signError);
-    await supabase.from("uploaded_documents").delete().eq("id", statementId);
+    await supabase.rpc("delete_statement", { p_document_id: statement.id });
     return jsonError(
       "Could not prepare secure storage for this file. Please try again.",
       500
@@ -105,10 +103,10 @@ export async function POST(request: Request) {
 
   return NextResponse.json(
     {
-      statementId,
+      statementId: statement.id,
       path: signedUpload.path,
       token: signedUpload.token,
-      fileName,
+      fileName: statement.file_name,
     },
     {
       status: 201,

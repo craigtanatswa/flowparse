@@ -10,6 +10,8 @@ from .amounts import (
     is_balance_label,
     is_summary_label,
     parse_amount_word,
+    signed_value,
+    standalone_currency,
 )
 from .banks import BankProfile, detect_bank_name, detect_bank_profile
 from .dates import (
@@ -147,6 +149,57 @@ def _word_indices_before(words: list[Word], text_end: int) -> set[int]:
     return {index for index, (start, _) in enumerate(spans) if start < text_end}
 
 
+def _merge_grouped_words(words: list[Word], skipped: set[int]) -> list[Word]:
+    """Join space-grouped amounts split by the PDF word extractor.
+
+    ``1 234,56`` is a common European printing of ``1234,56``. PyMuPDF splits it
+    into two words, so without this step the parser would read ``234,56`` and
+    understate the amount by a factor of 1,000. Only tightly-spaced numeric
+    groups are joined; separate table columns stay separate.
+    """
+    usable = [(index, word) for index, word in enumerate(words) if index not in skipped]
+    merged: list[Word] = []
+    cursor = 0
+
+    while cursor < len(usable):
+        _, word = usable[cursor]
+        if re.fullmatch(r"\d{1,3}", word.text):
+            parts = [word.text]
+            last = word
+            next_cursor = cursor + 1
+            while next_cursor < len(usable):
+                _, next_word = usable[next_cursor]
+                if not re.fullmatch(r"\d{3}(?:[.,]\d{2})?", next_word.text):
+                    break
+                if next_word.x0 - last.x1 > 5.0:
+                    break
+                parts.append(next_word.text)
+                last = next_word
+                next_cursor += 1
+            if len(parts) > 1:
+                combined = "".join(parts)
+                if re.fullmatch(r"\d{4,}", combined) or re.fullmatch(
+                    r"\d+[.,]\d{2}", combined
+                ):
+                    merged.append(
+                        Word(
+                            text=combined,
+                            x0=word.x0,
+                            y0=word.y0,
+                            x1=last.x1,
+                            y1=word.y1,
+                            confidence=min(
+                                item.confidence for item in (word, last)
+                            ),
+                        )
+                    )
+                    cursor = next_cursor
+                    continue
+        merged.append(word)
+        cursor += 1
+    return merged
+
+
 def _categories_for_line(line: Line) -> dict[str, list[Word]]:
     categories: dict[str, list[Word]] = {}
     assigned: set[int] = set()
@@ -182,7 +235,11 @@ def detect_header(lines: list[Line]) -> HeaderInfo | None:
         categories = _categories_for_line(line)
         amount_categories = {"debit", "credit", "balance", "amount"} & categories.keys()
         identity = {"date", "description"} & categories.keys()
-        if amount_categories and (identity or len(amount_categories) >= 2):
+        # A real table header has at least one identity column (Date or
+        # Description) as well as a money column. A "Total debits / Total
+        # credits" summary also has two money words but must never be mistaken
+        # for the table header: that would hide every row above it.
+        if amount_categories and identity:
             candidates.append((index, categories))
 
     if not candidates:
@@ -267,7 +324,7 @@ def assign_amounts(
             nearest = min(anchors, key=lambda name: abs(_centre(token.word) - anchors[name]))
             groups[nearest].append(token)
 
-        balance = groups["balance"][-1].value if groups.get("balance") else None
+        balance = signed_value(groups["balance"][-1]) if groups.get("balance") else None
         debit = None
         credit = None
         side_source = "none"
@@ -312,16 +369,17 @@ def assign_amounts(
         leftovers = [token for token in tokens if id(token) not in assigned_ids]
         if leftovers and balance is None and len(leftovers) == 1:
             token = leftovers[-1]
+            token_value = signed_value(token)
             if previous_balance is not None:
-                diff = token.value - previous_balance
+                diff = token_value - previous_balance
                 if abs(diff) <= Decimal("0.01") and len(tokens) > 1:
-                    balance = token.value
+                    balance = token_value
                 elif abs(diff) <= Decimal("0.01"):
                     pass
                 else:
-                    balance = token.value
+                    balance = token_value
             else:
-                balance = token.value
+                balance = token_value
 
         if debit == Decimal("0.00"):
             debit = None
@@ -361,7 +419,7 @@ def assign_amounts(
         return AmountAssignment(token.value, None, None, reasons, "ambiguous")
 
     if len(tokens) >= 3:
-        balance = rightmost
+        balance = signed_value(rightmost_token)
         first, second = tokens[0], tokens[1]
         debit = first.value
         credit = second.value
@@ -373,13 +431,17 @@ def assign_amounts(
             option_b = first.value - second.value
             if _approx_equal(diff, option_a):
                 debit, credit = first.value, second.value
+                side_source = "balance"
             elif _approx_equal(diff, option_b):
                 debit, credit = second.value, first.value
+                side_source = "balance"
             else:
                 reasons.append("Running balance does not match the previous row.")
-        elif first.negative:
-            debit = first.value
-            credit = second.value
+                side_source = "ambiguous"
+        else:
+            reasons.append(
+                "Debit and credit columns could not be confirmed without a header or opening balance."
+            )
         return AmountAssignment(
             debit if debit != Decimal("0.00") else None,
             credit if credit != Decimal("0.00") else None,
@@ -390,7 +452,7 @@ def assign_amounts(
 
     # Two amounts. The rightmost is normally the running balance.
     if previous_balance is not None:
-        balance = rightmost
+        balance = signed_value(rightmost_token)
         diff = balance - previous_balance
         first = tokens[0]
         signed = _value_token(first)
@@ -419,9 +481,10 @@ def assign_amounts(
     first = tokens[0]
     reasons.append("Statement columns could not be identified from a header; amount and balance were inferred.")
     if first.negative:
-        return AmountAssignment(first.value, None, rightmost, reasons, "ambiguous")
+        return AmountAssignment(first.value, None, rightmost, reasons, "sign")
     if first.credit_marker:
-        return AmountAssignment(None, first.value, rightmost, reasons, "ambiguous")
+        return AmountAssignment(None, first.value, rightmost, reasons, "sign")
+    reasons.append("Debit or credit direction could not be confirmed for this row.")
     return AmountAssignment(first.value, None, rightmost, reasons, "ambiguous")
 
 
@@ -492,6 +555,37 @@ class StatementParser:
             lines = self.lines_by_page.get(page.number, [])
             for index, line in enumerate(lines):
                 lowered = " ".join(line.text.lower().split())
+                lead = match_leading_date(line.text)
+                if lead is not None:
+                    remainder = line.text[lead.end():].strip().lower()
+                    # A dated line is a transaction row unless the date is
+                    # immediately followed by a balance label and the line has a
+                    # single money token. This stops a description such as
+                    # "TRANSFER TO CLOSING BALANCE" from being mistaken for the
+                    # statement endpoint.
+                    if not remainder.startswith(
+                        (
+                            "opening balance",
+                            "closing balance",
+                            "balance brought",
+                            "balance b/f",
+                            "balance carried",
+                            "balance c/f",
+                            "ending balance",
+                            "final balance",
+                            "starting balance",
+                        )
+                    ):
+                        continue
+                    if (
+                        sum(
+                            1
+                            for word in _merge_grouped_words(line.words, set())
+                            if parse_amount_word(word) is not None
+                        )
+                        != 1
+                    ):
+                        continue
                 is_opening = ("opening" in lowered and "balance" in lowered) or any(
                     label in lowered for label in self.profile.opening_labels
                 )
@@ -522,21 +616,36 @@ class StatementParser:
 
     def _label_amount(self, line: Line, lines: list[Line], index: int) -> Decimal | None:
         tokens: list[AmountToken] = []
-        for word in line.words:
+        for word in _merge_grouped_words(line.words, set()):
             parsed = parse_amount_word(word)
             if parsed:
                 tokens.append(parsed)
         if not tokens and index + 1 < len(lines):
             next_line = lines[index + 1]
             if not match_leading_date(next_line.text):
-                for word in next_line.words:
+                for word in _merge_grouped_words(next_line.words, set()):
                     parsed = parse_amount_word(word)
                     if parsed:
                         tokens.append(parsed)
         if not tokens:
             return None
-        # The balance appears in the rightmost money column.
-        return sorted(tokens, key=lambda token: token.word.x0)[-1].value
+        # The balance appears in the rightmost money column. Keep a printed
+        # negative sign, parenthesis, DR marker, or a DR word printed next to
+        # the amount: an overdrawn balance is not a credit.
+        rightmost_token = sorted(tokens, key=lambda token: token.word.x0)[-1]
+        value = signed_value(rightmost_token)
+        for word in _merge_grouped_words(line.words, set()):
+            if word.x0 < rightmost_token.word.x1:
+                continue
+            if word.x0 - rightmost_token.word.x1 > 15:
+                break
+            marker = word.text.strip(".,:;()[]").upper()
+            if marker == "DR":
+                value = -abs(value)
+            elif marker == "CR":
+                value = abs(value)
+            break
+        return value
 
     # ------------------------------------------------------------------ rows
 
@@ -671,9 +780,7 @@ class StatementParser:
         ]
         minimum_x = page.width * 0.35
         tokens: list[AmountToken] = []
-        for index, word in enumerate(line.words):
-            if index in skipped_indices:
-                continue
+        for word in _merge_grouped_words(line.words, skipped_indices):
             parsed = parse_amount_word(word)
             if not parsed:
                 continue
@@ -684,6 +791,47 @@ class StatementParser:
         tokens.sort(key=lambda token: token.word.x0)
         return tokens[-4:]
 
+    def _attach_standalone_markers(
+        self, line: Line, tokens: list[AmountToken]
+    ) -> set[int]:
+        """Attach currency codes and DR/CR markers printed next to an amount.
+
+        Real statements commonly print ``USD 100.00`` or ``1,000.00 DR`` as
+        separate words. The amount parser cannot see the neighbouring word, so
+        resolve it here and exclude it from the description.
+        """
+        if not tokens:
+            return set()
+        token_word_ids = {id(token.word) for token in tokens}
+        used: set[int] = set()
+        for index, word in enumerate(line.words):
+            if id(word) in token_word_ids:
+                continue
+            marker = word.text.strip(".,:;()[]").upper()
+            currency = standalone_currency(word.text)
+            if marker not in {"DR", "CR"} and currency is None:
+                continue
+            nearest = min(
+                tokens,
+                key=lambda token: abs(_centre(token.word) - _centre(word)),
+            )
+            gap = max(
+                nearest.word.x0 - word.x1,
+                word.x0 - nearest.word.x1,
+                0.0,
+            )
+            if gap > 40:
+                continue
+            if marker == "DR":
+                nearest.negative = True
+            elif marker == "CR":
+                nearest.negative = False
+                nearest.credit_marker = True
+            elif currency is not None and nearest.currency is None:
+                nearest.currency = currency
+            used.add(index)
+        return used
+
     def _line_description(
         self,
         line: Line,
@@ -691,11 +839,19 @@ class StatementParser:
         tokens: list[AmountToken],
     ) -> str:
         amount_word_ids = {id(token.word) for token in tokens}
-        words = [
-            word.text
-            for index, word in enumerate(line.words)
-            if index not in skipped_indices and id(word) not in amount_word_ids
-        ]
+        amount_spans = [(token.word.x0, token.word.x1) for token in tokens]
+        words: list[str] = []
+        for index, word in enumerate(line.words):
+            if index in skipped_indices or id(word) in amount_word_ids:
+                continue
+            # A merged space-grouped amount is represented by one synthetic
+            # token; drop its original numeric fragments from the description.
+            if re.fullmatch(r"[\d.,']+", word.text) and any(
+                left - 0.5 <= word.x0 and word.x1 <= right + 0.5
+                for left, right in amount_spans
+            ):
+                continue
+            words.append(word.text)
         return " ".join(words).strip()
 
     def _reference_from_column(
@@ -735,6 +891,7 @@ class StatementParser:
         tokens = self._amounts_for_line(line, page, removed_indices, columns)
         if not tokens:
             return None
+        currency_indices = self._attach_standalone_markers(line, tokens)
 
         reference_match = REFERENCE_RE.search(line.text)
         if reference_match:
@@ -743,7 +900,7 @@ class StatementParser:
         else:
             reference, reference_indices = self._reference_from_column(line, columns)
 
-        description_indices = removed_indices | reference_indices
+        description_indices = removed_indices | reference_indices | currency_indices
         description_text = self._line_description(line, description_indices, tokens)
         if prefix_description:
             description_text = f"{prefix_description} {description_text}".strip()
@@ -762,6 +919,14 @@ class StatementParser:
 
         row_currency, currency_reasons = resolve_row_currency(tokens, self.currency)
         reasons.extend(currency_reasons)
+        if (
+            self.currency
+            and self.currency != "USD"
+            and any("$" in token.raw and token.currency is None for token in tokens)
+        ):
+            reasons.append(
+                f"A bare $ amount is ambiguous on a {self.currency} statement; verify this row's currency."
+            )
 
         if assignment.side_source == "ambiguous" and balance is not None and self.previous_balance is not None:
             amount = debit or credit
@@ -795,14 +960,20 @@ class StatementParser:
         if debit is not None and credit is not None:
             reasons.append("Both a debit and a credit amount were identified.")
 
+        direction_confirmed = assignment.side_source in {"column", "sign", "balance"}
+        if debit is not None and credit is not None:
+            direction_confirmed = False
+
         # Validate against the running balance. Keep both values; never correct
-        # statement figures silently.
+        # statement figures silently. A mismatch means the inferred direction
+        # cannot be trusted for deriving an opening balance.
         if balance is not None and self.previous_balance is not None and (
             debit is not None or credit is not None
         ):
             expected = self.previous_balance + (credit or Decimal("0.00")) - (debit or Decimal("0.00"))
             if not _approx_equal(balance, expected):
                 reasons.append("Running balance does not match the previous transaction.")
+                direction_confirmed = False
 
         description = normalise_description(description_text)
         if not description:
@@ -822,6 +993,7 @@ class StatementParser:
             needs_review=bool(reasons),
             review_reasons=list(dict.fromkeys(reasons)),
             raw_text=line.text,
+            direction_confirmed=direction_confirmed,
         )
         self.transactions.append(transaction)
         self.page_stats[page.number]["transactions"] = int(
@@ -901,16 +1073,20 @@ class StatementParser:
             if not in_body:
                 continue
 
-            if is_summary_label(text) and (header is None or line.top >= body_start - 2):
-                flush_pending("Dated line did not contain an amount.")
-                continue
-
-            if self._is_noise(lowered):
-                continue
-
             txn_date, value_date, date_error, removed, description_text = self._row_dates(
                 line, columns
             )
+
+            # Summary and footer text must never hide a dated transaction row.
+            # Descriptions such as "PAYMENT TO WWW.AMAZON.COM" are common and
+            # must not be discarded as page furniture.
+            if txn_date is None:
+                if is_summary_label(text):
+                    flush_pending("Dated line did not contain an amount.")
+                    continue
+                if self._is_noise(lowered):
+                    continue
+
             amounts = self._amounts_for_line(line, page, removed, columns)
 
             if txn_date is not None or (date_error and amounts):
@@ -1040,7 +1216,16 @@ class StatementParser:
 
         if self.opening_balance is None and self.first_balance_row is not None:
             first = self.first_balance_row
-            if first.balance is not None and (first.debit is not None or first.credit is not None):
+            # Only derive an opening balance when the first row's direction is
+            # explicit. Otherwise the derivation is circular: a row that was
+            # guessed as a debit would manufacture an opening balance that
+            # makes the guess look correct.
+            if (
+                first.direction_confirmed
+                and first.date is not None
+                and first.balance is not None
+                and (first.debit is not None or first.credit is not None)
+            ):
                 self.opening_balance = first.balance - (first.credit or Decimal("0.00")) + (
                     first.debit or Decimal("0.00")
                 )
@@ -1071,9 +1256,15 @@ class StatementParser:
                 "review them before exporting."
             )
         if self.currency_ambiguous:
-            self.warnings.append(
-                "The statement currency could not be confirmed. Amounts are shown without a currency symbol."
-            )
+            if self.currency:
+                self.warnings.append(
+                    f"The statement currency could not be confirmed. {self.currency} was used because "
+                    "the document contains an ambiguous symbol; verify it before exporting."
+                )
+            else:
+                self.warnings.append(
+                    "The statement currency could not be confirmed. Amounts are shown without a currency symbol."
+                )
         ocr_pages = [page.number for page in self.pdf.pages if page.method == "ocr"]
         if ocr_pages:
             self.warnings.append(
@@ -1082,6 +1273,14 @@ class StatementParser:
         if self.duplicate_count:
             self.warnings.append(
                 f"{self.duplicate_count} potential duplicate transaction(s) were found and kept for review."
+            )
+        if self.opening_source == "derived":
+            self.warnings.append(
+                "The opening balance was inferred from the first running balance because the statement did not print one. It was not treated as an independent reconciliation check."
+            )
+        if self.closing_source == "derived":
+            self.warnings.append(
+                "The closing balance was taken from the last printed running balance because the statement did not print a closing balance label."
             )
         if self.opening_balance is None or self.closing_balance is None:
             self.warnings.append(
@@ -1098,7 +1297,16 @@ class StatementParser:
             opening_balance=self.opening_balance,
             closing_balance=self.closing_balance,
             transactions=self.transactions,
+            opening_source=self.opening_source,
+            closing_source=self.closing_source,
+            statement_currency=self.currency,
         )
+        mixed_currency_rows = int(validation.get("mixed_currency_rows") or 0)
+        if mixed_currency_rows:
+            self.warnings.append(
+                f"{mixed_currency_rows} row(s) use a currency different from the statement currency. "
+                "The summary totals mix currencies, so the statement is not marked verified."
+            )
 
         notify_progress(progress, "Preparing the transaction preview", 93)
 

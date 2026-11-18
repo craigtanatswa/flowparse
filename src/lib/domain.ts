@@ -1,5 +1,6 @@
 import type { Json, Tables } from "@/lib/database.types";
 import type { AppStatus } from "@/lib/constants";
+import { normalizeAmountText } from "@/lib/utils";
 
 export type StatementRecord = Tables<"uploaded_documents">;
 export type TransactionRecord = Tables<"extracted_transactions">;
@@ -31,6 +32,7 @@ export interface ExtractionValidation {
   running_balance_failures: number;
   incomplete_rows: number;
   duplicate_transactions: number;
+  mixed_currency_rows: number;
 }
 
 export interface UnparsedLine {
@@ -89,6 +91,7 @@ const emptyValidation: ExtractionValidation = {
   running_balance_failures: 0,
   incomplete_rows: 0,
   duplicate_transactions: 0,
+  mixed_currency_rows: 0,
 };
 
 const emptyConfidence: ExtractionConfidence = {
@@ -175,6 +178,7 @@ export function readValidation(value: Json): ExtractionValidation {
     running_balance_failures: asNumber(raw.running_balance_failures),
     incomplete_rows: asNumber(raw.incomplete_rows),
     duplicate_transactions: asNumber(raw.duplicate_transactions),
+    mixed_currency_rows: asNumber(raw.mixed_currency_rows),
   };
 }
 
@@ -298,9 +302,9 @@ export interface LiveReconciliation {
 }
 
 export function parseAmountOrNull(value: string): number | null {
-  const cleaned = value.trim().replace(/[£$€,\s]/g, "");
-  if (!cleaned) return null;
-  const parsed = Number(cleaned);
+  const normalized = normalizeAmountText(value);
+  if (normalized === null) return null;
+  const parsed = Number(normalized);
   return Number.isFinite(parsed) ? parsed : null;
 }
 

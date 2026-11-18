@@ -19,7 +19,7 @@ export function MarketingHeader() {
         <Logo imageClassName="h-8" />
 
         <nav
-          className="hidden items-center gap-7 text-[12.5px] font-medium text-muted-foreground md:flex"
+          className="hidden items-center gap-7 text-[12.5px] font-medium text-muted-foreground lg:flex"
           aria-label="Main navigation"
         >
           {navigation.map((item) => (

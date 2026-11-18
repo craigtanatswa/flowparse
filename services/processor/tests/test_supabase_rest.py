@@ -6,7 +6,7 @@ import httpx
 import pytest
 
 from app.config import Settings
-from app.supabase_rest import SupabaseRest
+from app.supabase_rest import SupabaseError, SupabaseRest
 
 SUPABASE_URL = "https://example.supabase.co"
 SERVICE_ROLE_KEY = "test-service-role"
@@ -101,6 +101,52 @@ def test_claim_stale_jobs_can_leave_queued_jobs_for_the_worker(
 
     assert db.claim_stale_jobs(20, include_queued=False) == 0
     assert requests[0]["status"] == "eq.processing"
+
+
+def test_download_document_rejects_a_cross_tenant_storage_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url.path)
+        return httpx.Response(200, content=b"%PDF-1.7")
+
+    db = _db_with_transport(monkeypatch, handler)
+
+    with pytest.raises(SupabaseError, match="does not belong"):
+        db.download_document(
+            {
+                "id": "doc-1",
+                "user_id": "user-1",
+                "storage_path": "user-2/doc-2/original.pdf",
+                "file_size": 123,
+            }
+        )
+
+    assert calls == []
+
+
+def test_download_document_allows_the_owner_folder(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path.endswith("/statements/user-1/doc-1/original.pdf")
+        return httpx.Response(200, content=b"%PDF-1.7")
+
+    db = _db_with_transport(monkeypatch, handler)
+
+    assert (
+        db.download_document(
+            {
+                "id": "doc-1",
+                "user_id": "user-1",
+                "storage_path": "user-1/doc-1/original.pdf",
+                "file_size": 123,
+            }
+        )
+        == b"%PDF-1.7"
+    )
 
 
 def test_claim_next_job_skips_job_claimed_by_another_worker(

@@ -13,11 +13,12 @@ export async function GET(_request: Request, { params }: RouteContext) {
   const id = parseUuid((await params).id);
   if (!id) return jsonError("Invalid statement id.");
 
-  const { supabase } = context;
+  const { user, supabase } = context;
   const { data: statement, error } = await supabase
     .from("uploaded_documents")
     .select("file_name,storage_path")
     .eq("id", id)
+    .eq("user_id", user.id)
     .maybeSingle();
 
   if (error) {

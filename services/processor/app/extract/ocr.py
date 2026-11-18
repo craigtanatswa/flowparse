@@ -59,7 +59,7 @@ def ocr_page(
         output_type=Output.DICT,
     )
     words: list[Word] = []
-    confidences: list[float] = []
+    all_confidences: list[float] = []
     for index, raw_text in enumerate(data.get("text", [])):
         text = (raw_text or "").strip()
         if not text:
@@ -68,6 +68,10 @@ def ocr_page(
             confidence = float(data["conf"][index])
         except (KeyError, ValueError, TypeError):
             confidence = 0.0
+        # Score every recognised token, including the ones discarded as too
+        # unreliable to parse. Otherwise a page full of garbage with a handful
+        # of high-confidence words would look like a clean scan.
+        all_confidences.append(confidence)
         if confidence < 20:
             continue
         left = float(data["left"][index]) * scale
@@ -84,8 +88,9 @@ def ocr_page(
                 confidence=confidence,
             )
         )
-        confidences.append(confidence)
 
     text = " ".join(word.text for word in words)
-    mean_confidence = sum(confidences) / len(confidences) if confidences else 0.0
+    mean_confidence = (
+        sum(all_confidences) / len(all_confidences) if all_confidences else 0.0
+    )
     return words, text, mean_confidence

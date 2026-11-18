@@ -27,6 +27,7 @@ export default async function StatementDetailPage({
         .from("extracted_transactions")
         .select("*")
         .eq("document_id", id)
+        .eq("user_id", user.id)
         .order("sort_index", { ascending: true })
         .order("created_at", { ascending: true }),
     ]);

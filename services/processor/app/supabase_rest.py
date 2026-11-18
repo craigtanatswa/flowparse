@@ -181,7 +181,16 @@ class SupabaseRest:
         return None
 
     def download_document(self, document: dict[str, Any]) -> bytes:
-        path = quote(str(document["storage_path"]), safe="/")
+        storage_path = str(document.get("storage_path") or "")
+        user_id = str(document.get("user_id") or "")
+        # Defence in depth: a document row must never cause the service role to
+        # read an object outside its owner's folder. The database constraint and
+        # create_statement RPC enforce this too.
+        if not user_id or not storage_path.startswith(f"{user_id}/"):
+            raise SupabaseError(
+                "The document storage path does not belong to its owner."
+            )
+        path = quote(storage_path, safe="/")
         url = f"{_base(self.settings)}/storage/v1/object/{self.settings.supabase_statements_bucket}/{path}"
         # Hosted Supabase Storage sits behind a CDN that ignores conditional
         # request headers (Cache-Control/Pragma) and keys its cache on the full

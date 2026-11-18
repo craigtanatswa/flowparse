@@ -101,7 +101,7 @@ export default function OpengraphImage() {
             fontSize: 22,
           }}
         >
-          <div style={{ display: "flex" }}>flowparse.vercel.app</div>
+          <div style={{ display: "flex" }}>www.flowparse.app</div>
           <div style={{ display: "flex" }}>Private by default</div>
         </div>
       </div>

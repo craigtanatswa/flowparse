@@ -21,14 +21,20 @@ export async function GET(request: Request, { params }: RouteContext) {
     return jsonError("Choose either CSV or XLSX export.");
   }
 
-  const { supabase } = context;
+  const { user, supabase } = context;
   const [{ data: statement, error: statementError }, { data: transactions, error: transactionsError }] =
     await Promise.all([
-      supabase.from("uploaded_documents").select("*").eq("id", id).maybeSingle(),
+      supabase
+        .from("uploaded_documents")
+        .select("*")
+        .eq("id", id)
+        .eq("user_id", user.id)
+        .maybeSingle(),
       supabase
         .from("extracted_transactions")
         .select("*")
         .eq("document_id", id)
+        .eq("user_id", user.id)
         .order("sort_index", { ascending: true })
         .order("created_at", { ascending: true }),
     ]);

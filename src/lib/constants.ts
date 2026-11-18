@@ -41,7 +41,8 @@ export const statementStatus: Record<
   completed: {
     label: "Extracted",
     shortLabel: "Complete",
-    description: "All rows were extracted and the statement reconciles.",
+    description:
+      "All rows were extracted. Check the reconciliation status before exporting.",
     tone: "success",
   },
   partial: {

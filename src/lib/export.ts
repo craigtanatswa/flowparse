@@ -14,7 +14,7 @@ import { formatAmount, formatDateTime, formatPeriod } from "@/lib/utils";
 
 function csvCell(value: string): string {
   // Neutralise spreadsheet formula injection for free-text values.
-  const safe = /^[=+\-@\t\r]/.test(value) ? `'${value}` : value;
+  const safe = /^[=+\-@\t\r\n]/.test(value) ? `'${value}` : value;
   return `"${safe.replace(/"/g, '""')}"`;
 }
 

@@ -48,7 +48,9 @@ def build_lines(words: list[Word], page_number: int) -> list[Line]:
         for index in range(len(lines) - 1, max(len(lines) - 5, -1), -1):
             if abs(centre - line_centres[index]) <= tolerance:
                 lines[index].append(word)
-                line_centres[index] = sum((w.y0 + w.y1) / 2 for w in lines[index]) / len(lines[index])
+                line_centres[index] = sum(
+                    (w.y0 + w.y1) / 2 for w in lines[index]
+                ) / len(lines[index])
                 placed = True
                 break
         if not placed:
@@ -86,99 +88,108 @@ def read_pdf(
     try:
         document = fitz.open(stream=data, filetype="pdf")
     except Exception as exc:
-        raise ExtractionError("The PDF could not be opened. It may be damaged or password protected.") from exc
+        raise ExtractionError(
+            "The PDF could not be opened. It may be damaged or password protected."
+        ) from exc
 
-    if document.needs_pass:
-        raise ExtractionError("This PDF is password protected. Remove the password and upload it again.")
+    try:
+        if document.needs_pass:
+            raise ExtractionError(
+                "This PDF is password protected. Remove the password and upload it again."
+            )
 
-    page_count = document.page_count
-    if page_count == 0:
-        raise ExtractionError("The PDF contains no pages.")
-    if page_count > max_pages:
-        raise ExtractionError(f"This PDF has {page_count} pages. The current limit is {max_pages} pages.")
+        page_count = document.page_count
+        if page_count == 0:
+            raise ExtractionError("The PDF contains no pages.")
+        if page_count > max_pages:
+            raise ExtractionError(
+                f"This PDF has {page_count} pages. The current limit is {max_pages} pages."
+            )
 
-    notify_progress(progress, "Reading the document", 12)
+        notify_progress(progress, "Reading the document", 12)
 
-    pages: list[PageData] = []
-    used_ocr = False
-    used_digital = False
+        pages: list[PageData] = []
+        used_ocr = False
+        used_digital = False
 
-    for index in range(page_count):
-        page = document.load_page(index)
-        page_number = index + 1
-        page_percent = 12 + round(48 * page_number / page_count)
-        digital_text = page.get_text("text")
-        words = _words_from_pdf(page, page_number)
+        for index in range(page_count):
+            page = document.load_page(index)
+            page_number = index + 1
+            page_percent = 12 + round(48 * page_number / page_count)
+            digital_text = page.get_text("text")
+            words = _words_from_pdf(page, page_number)
 
-        # A real text layer normally has plenty of characters. Pages with only a
-        # scanned image (or a tiny page number) are routed through OCR.
-        if _alnum_count(digital_text) >= 60 and words:
+            # A real text layer normally has plenty of characters. Pages with
+            # only a scanned image (or a tiny page number) are routed through
+            # OCR.
+            if _alnum_count(digital_text) >= 60 and words:
+                pages.append(
+                    PageData(
+                        number=page_number,
+                        width=page.rect.width,
+                        height=page.rect.height,
+                        words=words,
+                        method="digital",
+                        text=digital_text,
+                    )
+                )
+                used_digital = True
+                notify_progress(
+                    progress,
+                    f"Reading page {page_number} of {page_count}",
+                    page_percent,
+                )
+                continue
+
+            if not ocr_enabled:
+                raise ExtractionError(
+                    "This PDF appears to be scanned, but OCR is disabled on the processing server."
+                )
+
+            notify_progress(
+                progress,
+                f"Running OCR on page {page_number} of {page_count}",
+                page_percent,
+            )
+            ocr_words, ocr_text, confidence = ocr_page(
+                page,
+                page_number,
+                dpi=ocr_dpi,
+                language=ocr_language,
+                tesseract_cmd=tesseract_cmd,
+            )
+            if not ocr_words:
+                camera_ready = page.get_pixmap(dpi=110, alpha=False)
+                png = camera_ready.tobytes("png")
+                if len(png) < 200:
+                    raise ExtractionError(
+                        f"Page {page_number} appears to be blank and could not be read."
+                    )
             pages.append(
                 PageData(
                     number=page_number,
                     width=page.rect.width,
                     height=page.rect.height,
-                    words=words,
-                    method="digital",
-                    text=digital_text,
+                    words=ocr_words,
+                    method="ocr",
+                    text=ocr_text,
+                    ocr_confidence=confidence,
                 )
             )
-            used_digital = True
+            used_ocr = True
             notify_progress(
                 progress,
-                f"Reading page {page_number} of {page_count}",
+                f"Finished OCR for page {page_number}",
                 page_percent,
             )
-            continue
 
-        if not ocr_enabled:
-            raise ExtractionError(
-                "This PDF appears to be scanned, but OCR is disabled on the processing server."
-            )
-
-        notify_progress(
-            progress,
-            f"Running OCR on page {page_number} of {page_count}",
-            page_percent,
+        title = document.metadata.get("title") if document.metadata else None
+        return PdfText(
+            pages=pages,
+            page_count=page_count,
+            title=title.strip() if title else None,
+            used_ocr=used_ocr,
+            used_digital=used_digital,
         )
-        ocr_words, ocr_text, confidence = ocr_page(
-            page,
-            page_number,
-            dpi=ocr_dpi,
-            language=ocr_language,
-            tesseract_cmd=tesseract_cmd,
-        )
-        if not ocr_words:
-            camera_ready = page.get_pixmap(dpi=110, alpha=False)
-            png = camera_ready.tobytes("png")
-            if len(png) < 200:
-                raise ExtractionError(
-                    f"Page {page_number} appears to be blank and could not be read."
-                )
-        pages.append(
-            PageData(
-                number=page_number,
-                width=page.rect.width,
-                height=page.rect.height,
-                words=ocr_words,
-                method="ocr",
-                text=ocr_text,
-                ocr_confidence=confidence,
-            )
-        )
-        used_ocr = True
-        notify_progress(
-            progress,
-            f"Finished OCR for page {page_number} of {page_count}",
-            page_percent,
-        )
-
-    title = document.metadata.get("title") if document.metadata else None
-    document.close()
-    return PdfText(
-        pages=pages,
-        page_count=page_count,
-        title=title.strip() if title else None,
-        used_ocr=used_ocr,
-        used_digital=used_digital,
-    )
+    finally:
+        document.close()

@@ -50,6 +50,7 @@ import {
 import { statementStatus } from "@/lib/constants";
 import {
   isProcessingStatus,
+  readReport,
   readStatus,
   readValidation,
   type StatementPayload,
@@ -225,6 +226,10 @@ export function StatementDetail({
   const status = readStatus(statement.status);
   const processing = isProcessingStatus(status);
   const validation = readValidation(statement.validation);
+  const report = readReport(statement.report);
+  const derivedEndpoints =
+    report.opening_balance_source === "derived" ||
+    report.closing_balance_source === "derived";
   const canRetry =
     (status === "failed" || status === "uploaded") && transactions.length === 0;
 
@@ -736,6 +741,12 @@ export function StatementDetail({
                     {" → "}
                     {formatMoney(statement.closing_balance, statement.currency)}
                   </p>
+                  {derivedEndpoints ? (
+                    <p className="mt-0.5 text-[9.5px] leading-4 text-amber-700">
+                      Some endpoints were derived from running balances, not
+                      printed balances.
+                    </p>
+                  ) : null}
                 </div>
                 <div className="text-right">
                   <p className="text-[9.5px] font-medium tracking-[0.02em] text-muted-foreground">

@@ -90,6 +90,10 @@ class ParsedTransaction:
     needs_review: bool = False
     review_reasons: list[str] = field(default_factory=list)
     raw_text: str = ""
+    # True only when the debit/credit direction came from an explicit column,
+    # a sign/CR-DR marker, or a running-balance change. Heuristics and positional
+    # guesses stay False so they are never used to derive an opening balance.
+    direction_confirmed: bool = False
 
     def to_json(self) -> dict[str, Any]:
         return {

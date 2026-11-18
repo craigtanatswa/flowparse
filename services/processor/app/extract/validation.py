@@ -25,18 +25,23 @@ def detect_duplicate_transactions(transactions: list[ParsedTransaction]) -> int:
     an explicit, different reference, they are treated as distinct. A matching
     running balance is recorded as stronger evidence in the review reason.
     """
-    seen: dict[tuple[object, str, Decimal | None, Decimal | None], list[ParsedTransaction]] = {}
+    seen: dict[
+        tuple[object, str, Decimal | None, Decimal | None, str | None],
+        list[ParsedTransaction],
+    ] = {}
     flagged = 0
 
     for transaction in transactions:
-        amount = transaction.debit or transaction.credit
-        if transaction.date is None or amount is None:
+        if transaction.date is None:
+            continue
+        if transaction.debit is None and transaction.credit is None:
             continue
         key = (
             transaction.date,
             normalise_description(transaction.description).casefold(),
             transaction.debit,
             transaction.credit,
+            transaction.currency,
         )
         candidates = seen.setdefault(key, [])
         match = next(
@@ -131,11 +136,24 @@ def validate_statement(
     opening_balance: Decimal | None,
     closing_balance: Decimal | None,
     transactions: list[ParsedTransaction],
+    opening_source: str | None = None,
+    closing_source: str | None = None,
+    statement_currency: str | None = None,
 ) -> dict[str, object]:
     """Reconcile extracted rows against the statement's stated balances."""
     total_debits = sum((txn.debit or Decimal("0.00") for txn in transactions), Decimal("0.00"))
     total_credits = sum((txn.credit or Decimal("0.00") for txn in transactions), Decimal("0.00"))
     net = total_credits - total_debits
+
+    opening_derived = opening_source == "derived"
+    closing_derived = closing_source == "derived"
+    mixed_currency_rows = sum(
+        1
+        for txn in transactions
+        if txn.currency is not None
+        and statement_currency is not None
+        and txn.currency != statement_currency
+    )
 
     running_failures = sum(
         1
@@ -167,7 +185,11 @@ def validate_statement(
                 "id": "opening_balance",
                 "label": "Opening balance identified",
                 "status": "pass",
-                "detail": _money_detail(opening_balance),
+                "detail": (
+                    f"{_money_detail(opening_balance)} (derived from the first running balance)"
+                    if opening_derived
+                    else _money_detail(opening_balance)
+                ),
             }
         )
     else:
@@ -185,7 +207,11 @@ def validate_statement(
                 "id": "closing_balance",
                 "label": "Closing balance identified",
                 "status": "pass",
-                "detail": _money_detail(closing_balance),
+                "detail": (
+                    f"{_money_detail(closing_balance)} (taken from the last running balance)"
+                    if closing_derived
+                    else _money_detail(closing_balance)
+                ),
             }
         )
     else:
@@ -198,7 +224,7 @@ def validate_statement(
             }
         )
 
-    if difference is not None:
+    if difference is not None and not opening_derived:
         checks.append(
             {
                 "id": "endpoint_reconciliation",
@@ -208,6 +234,18 @@ def validate_statement(
                     "The statement balances reconcile."
                     if _approx_equal(difference, Decimal("0.00"))
                     else f"Difference of {_money_detail(difference)}."
+                ),
+            }
+        )
+    elif opening_derived:
+        checks.append(
+            {
+                "id": "endpoint_reconciliation",
+                "label": "Opening balance + credits − debits equals closing balance",
+                "status": "not_available",
+                "detail": (
+                    "The opening balance was derived from the first running balance, "
+                    "so this is not an independent check."
                 ),
             }
         )
@@ -261,13 +299,27 @@ def validate_statement(
             ),
         }
     )
+    checks.append(
+        {
+            "id": "currency_consistency",
+            "label": "All rows use the statement currency",
+            "status": "fail" if mixed_currency_rows else "pass",
+            "detail": (
+                f"{mixed_currency_rows} row(s) use a different currency; the summary totals mix currencies and were not treated as verified."
+                if mixed_currency_rows
+                else "Every row uses the statement currency."
+            ),
+        }
+    )
 
     if difference is None:
         status = "insufficient_data"
-    elif _approx_equal(difference, Decimal("0.00")) and not running_failures:
-        status = "verified"
-    else:
+    elif not _approx_equal(difference, Decimal("0.00")) or running_failures:
         status = "mismatch"
+    elif opening_derived or mixed_currency_rows:
+        status = "insufficient_data"
+    else:
+        status = "verified"
 
     return {
         "status": status,
@@ -284,6 +336,7 @@ def validate_statement(
         "running_balance_failures": running_failures,
         "incomplete_rows": incomplete_rows,
         "duplicate_transactions": duplicate_rows,
+        "mixed_currency_rows": mixed_currency_rows,
     }
 
 
