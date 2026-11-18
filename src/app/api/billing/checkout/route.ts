@@ -16,6 +16,15 @@ const checkoutSchema = z.object({
   plan: z.enum(PAID_PLAN_IDS),
 });
 
+function isNotFoundError(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "status" in error &&
+    (error as { status?: unknown }).status === 404
+  );
+}
+
 export async function POST(request: Request) {
   const context = await getApiContext();
   if (!context) return jsonError("You must be signed in to subscribe.", 401);
@@ -99,7 +108,24 @@ export async function POST(request: Request) {
     // subscription back to this account through the customer id, so entitlement
     // never depends on optional checkout metadata being copied onto the
     // subscription.
+    //
+    // Customer ids are scoped to a Dodo environment. A row written in test mode
+    // still holds a test customer id after switching to live (or the reverse),
+    // and Dodo rejects a checkout that references it. Drop the id when it does
+    // not exist in the active environment, then create a fresh customer.
     let customerId = billing?.dodo_customer_id ?? null;
+    if (customerId) {
+      try {
+        await client.customers.retrieve(customerId);
+      } catch (error) {
+        if (isNotFoundError(error)) {
+          customerId = null;
+        } else {
+          throw error;
+        }
+      }
+    }
+
     if (!customerId) {
       const customer = await client.customers.create({
         email: user.email,
